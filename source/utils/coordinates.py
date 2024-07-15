@@ -144,10 +144,10 @@ def _rotation_from_direction(
     Determine the position from which to grasp (as well as the corresponding gripper
     rotation) from the direction from which to grasp
     :param direction: from which to grasp the object (center is (0, 0, 0))
-    :param invariant_direction: where to start transformation (direction in which the
-    transformation is pretty much invariant))
     :param roll: of gripper
-    :param use_degrees: whether roll in degrees
+    :param invariant_direction: where to start transformation (direction in which the
+    transformation is pretty much invariant)
+    :param degrees: whether roll in degrees
     :return: start position of grasping motion, rotation matrix of gripper
     """
     direction = np.asarray(direction)
@@ -185,9 +185,7 @@ class Pose2D(Pose):
         rot_matrix = self.compute_rot_matrix(rot_matrix)
         super().__init__(self.dimension, coordinates, rot_matrix)
 
-    def compute_coordinates(
-        self, coordinates: Optional[(tuple | np.ndarray)]
-    ) -> np.ndarray:
+    def compute_coordinates(self, coordinates: Optional[(tuple | np.ndarray)]) -> np.ndarray:
         """
         Computes the coordinates from different representations
         :param coordinates: the input representation, can be tuple or ndarray; shape (2,)
@@ -199,14 +197,10 @@ class Pose2D(Pose):
             coordinates = np.asarray(coordinates)
         elif isinstance(coordinates, np.ndarray):
             coordinates = coordinates.reshape((-1,))
-        elif isinstance(coordinates, math_helpers.SE2Pose):
-            coordinates = np.asarray((coordinates.x, coordinates.y))
         assert coordinates.shape == (self.dimension,)
         return coordinates
 
-    def compute_rot_matrix(
-        self, rot_matrix: Optional[(np.ndarray | float)]
-    ) -> np.ndarray:
+    def compute_rot_matrix(self, rot_matrix: Optional[(np.ndarray | float)]) -> np.ndarray:
         """
         Computes the rotation matrix from different representations
         :param rot_matrix: the input representation, can be float or ndarray; shape (2, 2)
@@ -214,22 +208,26 @@ class Pose2D(Pose):
         """
         if rot_matrix is None:
             rot_matrix = np.eye(self.dimension)
-        else:
-            if isinstance(rot_matrix, np.ndarray):
-                rot_matrix = rot_matrix
-            elif isinstance(rot_matrix, float):
-                rot_matrix = _rot_matrix_from_angle(rot_matrix)
+        elif isinstance(rot_matrix, np.ndarray):
+            rot_matrix = rot_matrix
+        elif isinstance(rot_matrix, float):
+            rot_matrix = _rot_matrix_from_angle(rot_matrix)
         assert rot_matrix.shape == (self.dimension, self.dimension)
         return rot_matrix
+
+    def pose_as_array(self) -> np.ndarray:
+        """
+        Computes array from coordinates and angle
+        """
+        x, y = self.coordinates.tolist()
+        return np.ndarray(x, y, _angle_from_rot_matrix(self.rot_matrix))
 
     def as_pose(self) -> math_helpers.SE2Pose:
         """
         Computes the boston dynamics pose.
         """
         x, y = self.coordinates.tolist()
-        return math_helpers.SE2Pose(
-            x=x, y=y, angle=_angle_from_rot_matrix(self.rot_matrix)
-        )
+        return math_helpers.SE2Pose(x=x, y=y, angle=_angle_from_rot_matrix(self.rot_matrix))
 
     def to_dimension(self, dimension: int):
         """
@@ -290,9 +288,7 @@ class Pose2D(Pose):
         print(f"{transforms_snapshot=}")
         print(f"{relative_to_frame=}")
         print(f"{frame_name_image_sensor=}")
-        frame_tform_sensor = get_a_tform_b(
-            transforms_snapshot, relative_to_frame, frame_name_image_sensor
-        )
+        frame_tform_sensor = get_a_tform_b(transforms_snapshot, relative_to_frame, frame_name_image_sensor)
         return Pose2D.from_bosdyn_pose(frame_tform_sensor)
 
 
@@ -300,16 +296,14 @@ class Pose3D(Pose):
     def __init__(
         self,
         coordinates: Optional[(tuple | np.ndarray)] = None,
-        rot_matrix: Optional[(np.ndarray | math_helpers.Quat)] = None,
+        rot_matrix: Optional[(np.ndarray | Rotation)] = None,
     ):
         self.dimension = 3
         coordinates = self.compute_coordinates(coordinates)
         rot_matrix = self.compute_rot_matrix(rot_matrix)
         super().__init__(self.dimension, coordinates, rot_matrix)
 
-    def compute_coordinates(
-        self, coordinates: Optional[(tuple | np.ndarray)]
-    ) -> np.ndarray:
+    def compute_coordinates(self, coordinates: Optional[(tuple | np.ndarray)]) -> np.ndarray:
         """
         Computes the coordinates from different representations
         :param coordinates: the input representation, can be tuple or ndarray; shape (3,)
@@ -324,9 +318,7 @@ class Pose3D(Pose):
         assert coordinates.shape == (self.dimension,)
         return coordinates
 
-    def compute_rot_matrix(
-        self, rot_matrix: Optional[(np.ndarray | math_helpers.Quat)]
-    ) -> np.ndarray:
+    def compute_rot_matrix(self, rot_matrix: Optional[(np.ndarray | Rotation)]) -> np.ndarray:
         """
         Computes the rotation matrix from different representations
         :param rot_matrix: the input representation, BD Quat or ndarray representation; shape (3, 3)
@@ -334,11 +326,10 @@ class Pose3D(Pose):
         """
         if rot_matrix is None:
             rot_matrix = np.eye(self.dimension)
-        else:
-            if isinstance(rot_matrix, np.ndarray):
-                rot_matrix = rot_matrix
-            elif isinstance(rot_matrix, math_helpers.Quat):
-                rot_matrix = rot_matrix.to_matrix()
+        elif isinstance(rot_matrix, np.ndarray):
+            rot_matrix = rot_matrix
+        elif isinstance(rot_matrix, Rotation):
+            rot_matrix = rot_matrix.as_matrix()
         assert rot_matrix.shape == (self.dimension, self.dimension)
         return rot_matrix
 
@@ -347,9 +338,7 @@ class Pose3D(Pose):
         Compute BD SE3Pose.
         """
         x, y, z = self.coordinates.tolist()
-        return math_helpers.SE3Pose(
-            x=x, y=y, z=z, rot=math_helpers.Quat.from_matrix(self.rot_matrix)
-        )
+        return math_helpers.SE3Pose(x=x, y=y, z=z, rot=math_helpers.Quat.from_matrix(self.rot_matrix))
 
     def to_dimension(self, dimension: int):
         """
@@ -363,9 +352,7 @@ class Pose3D(Pose):
         elif dimension == 3:
             return self
 
-    def set_rot_from_rpy(
-        self, rpy: (float, float, float), degrees: bool = False
-    ) -> None:
+    def set_rot_from_rpy(self, rpy: (float, float, float), degrees: bool = False) -> None:
         """
         Set rotation from roll, pitch, yaw
         :param rpy: (roll, pitch, yaw)
@@ -387,9 +374,7 @@ class Pose3D(Pose):
         :param invariant_direction: vector around which roll rotates initially, default (1, 0, 0)
         :param degrees: whether roll is given in degrees
         """
-        self.rot_matrix = _rotation_from_direction(
-            direction, roll, invariant_direction, degrees, invert=False
-        )
+        self.rot_matrix = _rotation_from_direction(direction, roll, invariant_direction, degrees, invert=False)
 
     def set_from_scipy_rotation(self, rotation: Rotation) -> None:
         """
@@ -449,9 +434,7 @@ class Pose3D(Pose):
         """
         Initialize Pose3D using the transformation from two frames in the frame_tree_snapshot.
         """
-        frame_tform_sensor = get_a_tform_b(
-            transforms_snapshot, relative_to_frame, frame_name_image_sensor
-        )
+        frame_tform_sensor = get_a_tform_b(transforms_snapshot, relative_to_frame, frame_name_image_sensor)
         return Pose3D.from_bosdyn_pose(frame_tform_sensor)
 
     @staticmethod
@@ -478,9 +461,7 @@ def average_pose3Ds(poses: list[Pose3D]) -> Pose3D:
     return Pose3D(avg_coordinate, avg_rot_matrix)
 
 
-def from_a_to_b_distanced(
-    start_pose: Pose2D, end_pose: Pose2D, distance: float
-) -> Pose2D:
+def from_a_to_b_distanced(start_pose: Pose2D, end_pose: Pose2D, distance: float) -> Pose2D:
     """
     Starting from start_pose, calculate a pose that is distance units away from end_pose
     :param start_pose:
@@ -504,11 +485,7 @@ def from_a_to_b_distanced(
     return Pose2D(destination, yaw)
 
 
-def pose_distanced(
-    pose: Pose3D,
-    distance: float,
-    negate: bool = True,
-) -> Pose3D:
+def pose_distanced(pose: Pose3D, distance: float, negate: bool = True) -> Pose3D:
     """
     From the actual grasp position, determine a distanced one (coming from the same direction)
     :param pose: grasp pose
@@ -650,9 +627,7 @@ def spherical_angle_views_from_target(
     return poses
 
 
-def get_uniform_sphere_directions(
-    resolution: int = 4, return_cartesian: bool = True
-) -> np.ndarray:
+def get_uniform_sphere_directions(resolution: int = 4, return_cartesian: bool = True) -> np.ndarray:
     """
     Return directions uniformly distributed on a sphere
     :param resolution: number of directions for one circle slice along the equator
