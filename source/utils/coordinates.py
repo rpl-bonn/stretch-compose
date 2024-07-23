@@ -259,6 +259,16 @@ class Pose2D(Pose):
         self.rot_matrix = rot_matrix[:2, :2]
 
     @staticmethod
+    def from_array(array: np.ndarray) -> Pose2D:
+        """
+        Initialize Pose2D from a (3,) array containing coordinates and orientation angle
+        """
+        assert array.shape == (3,)
+        coordinates = (array[0], array[1])
+        rot_matrix = _rot_matrix_from_angle(array[2])
+        return Pose2D(coordinates, rot_matrix)
+
+    @staticmethod
     def from_bosdyn_pose(pose: math_helpers.SE2Pose) -> Pose2D:
         """
         Initialize Pose2D from the Boston Dynamics pose.
