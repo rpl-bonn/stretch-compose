@@ -3,7 +3,6 @@ import open3d as o3d
 import time
 from typing import Tuple
 from scripts.point_cloud_scripts.point_cloud_preprocessing import convert_time
-from scipy.spatial.transform import Rotation
 from utils.recursive_config import Config
 from utils.coordinates import Pose3D
 from utils import graspnet_interface

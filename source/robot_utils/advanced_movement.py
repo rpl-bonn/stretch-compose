@@ -5,6 +5,7 @@ import time
 import numpy as np
 import math
 import open3d as o3d
+from scipy.spatial.transform import Rotation
 
 from robot import HelloRobot
 from global_parameters import *
