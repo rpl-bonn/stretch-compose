@@ -19,7 +19,7 @@ from stretch_package.stretch_state.odom_subscriber import OdomSubscriber
 from stretch_package.stretch_state.jointstate_subscriber import JointStateSubscriber
 
 from utils.coordinates import Pose2D, Pose3D, pose_distanced
-from utils.robot_utils.global_parameters import *
+from global_parameters import *
 
 
 def spin_until_complete(node: Node):
