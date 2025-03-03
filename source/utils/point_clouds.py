@@ -229,6 +229,104 @@ def body_planning(
     return poses
 
 
+def body_planning_front(
+    env_cloud: PointCloud,
+    target: Pose3D,
+    shelf_normal: np.ndarray,
+    floor_height_thresh: float = 0,
+    body_height: float = 0.45,
+    min_target_distance: float = 0.75,
+    max_target_distance: float = 1,
+    min_obstacle_distance: float = 0.5,
+    n: int = 4,
+    vis_block: bool = False,       
+) -> Pose3D:
+    """
+    Plans a frontal position for the robot in front of a target pece of furniture.
+    """
+    #target = target.as_ndarray()
+
+    # delete floor from point cloud, so it doesn't interfere with the SDF
+    points = np.asarray(env_cloud.points)
+    min_points = np.min(points, axis=0)
+    max_points = np.max(points, axis=0)
+    points_bool = points[:, 2] > floor_height_thresh
+    index = np.where(points_bool)[0]
+    pc_no_ground = env_cloud.select_by_index(index)
+
+    # get points radiating outwards from target coordinate
+    circle_points = get_circle_points(
+        resolution=64,
+        nr_circles=2,
+        start_radius=min_target_distance,
+        end_radius=max_target_distance,
+        return_cartesian=True,
+    )
+    ## get center of radiating circle
+    target_at_body_height = target.copy()
+    target_at_body_height[-1] = body_height
+    target_at_body_height = target_at_body_height.reshape((1, 1, 3))
+    ## add the radiating circle center to the points to elevate them
+    circle_points = circle_points + target_at_body_height
+    ## filter every point that is outside the scanned scene
+    circle_points_bool = (min_points <= circle_points) & (circle_points <= max_points)
+    circle_points_bool = np.all(circle_points_bool, axis=2)
+    filtered_circle_points = circle_points[circle_points_bool]
+    filtered_circle_points = filtered_circle_points.reshape((-1, 3))
+
+    # transform point cloud to mesh to calculate SDF from
+    ball_sizes = (0.02, 0.011, 0.005)
+    ball_sizes = o3d.utility.DoubleVector(ball_sizes)
+    mesh_no_ground = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(pc_no_ground, radii=ball_sizes)
+    mesh_no_ground_legacy = o3d.t.geometry.TriangleMesh.from_legacy(mesh_no_ground)
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(mesh_no_ground_legacy)
+
+    # of the filtered points, cast ray from target to point to see if there are collisions
+    ray_directions = filtered_circle_points - target
+    rays_starts = np.tile(target, (ray_directions.shape[0], 1))
+    rays = np.concatenate([rays_starts, ray_directions], axis=1)
+    rays_tensor = o3d.core.Tensor(rays, dtype=o3d.core.Dtype.Float32)
+    response = scene.cast_rays(rays_tensor)
+    direct_connection_bool = response["t_hit"].numpy() > 1
+    filtered_circle_points = filtered_circle_points[direct_connection_bool]
+    circle_tensors = o3d.core.Tensor(filtered_circle_points, dtype=o3d.core.Dtype.Float32)
+
+    # calculate the best body positions
+    ## calculate SDF distances
+    distances = scene.compute_signed_distance(circle_tensors).numpy()
+    valid_points = circle_tensors[np.abs(distances) > min_obstacle_distance]
+    valid_points_num = valid_points.numpy()
+
+    # select coordinates most aligned with front plane normal
+    directions = valid_points_num - target
+    directions = directions / np.linalg.norm(directions, axis=1)[:, None]
+    shelf_normal = shelf_normal / np.linalg.norm(shelf_normal)
+    cosine_angles = np.abs(np.dot(directions, shelf_normal))
+    most_aligned_point_index = np.argmax(cosine_angles)
+    selected_coordinates = valid_points_num[most_aligned_point_index]
+
+    if vis_block:
+        # draw the entries in the cloud
+        x = o3d.geometry.TriangleMesh.create_sphere(radius=0.1)
+        x.translate(target.reshape(3, 1))
+        x.paint_uniform_color((1, 0, 0))
+        y = copy.deepcopy(env_cloud)
+        y = add_coordinate_system(y, (1, 0, 0), (0, 0, 0))
+        drawable_geometries = [x, y]
+        for idx, coordinate in enumerate(np.array([selected_coordinates]), 1):
+            sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.05)
+            sphere.translate(coordinate)
+            color = np.asarray([0, 1, 0]) * (idx / (2 * n) + 0.5)
+            sphere.paint_uniform_color(color)
+            drawable_geometries.append(sphere)
+        o3d.visualization.draw_geometries(drawable_geometries)
+
+    pose = Pose3D(selected_coordinates)
+    pose.set_rot_from_direction(target - selected_coordinates)
+    return pose
+
+
 def iterative_furthest_point_sampling(
     points: np.ndarray, num_samples: int
 ) -> np.ndarray:
