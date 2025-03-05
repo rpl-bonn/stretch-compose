@@ -16,20 +16,17 @@ from scipy.spatial.transform import Rotation
 from utils import recursive_config
 from utils.importer import PointCloud
 from utils.point_clouds import icp
+from typing import Tuple
 
 SAVE_OPENMASK3D = True
 
 
-def fetch_paths(
-    directory_path: bytes | str,
-) -> (dict[int, dict[str, str]], str, str):
+def fetch_paths(directory_path: bytes | str) -> Tuple[dict[int, dict[str, str]], str, str]:
     """
     Returns the paths to all relevant files for the scan alignment.
     Namely, all images, the associated json files, and the point cloud
-    :param directory_path: The path where all images, json files, and the ply file are
-    stored
-    :return: a dictionary containing the paths to both images and jsons keyed by number,
-     and the path to the ply file
+    :param directory_path: The path where all images, json files, and the ply file are stored
+    :return: a dictionary containing the paths to both images and jsons keyed by number, and the path to the ply file
     """
     jpg_pattern = r"^frame_(\d{5})\.jpg$"
     json_pattern = r"^frame_(\d{5})\.json$"
@@ -62,7 +59,7 @@ def fetch_paths(
                     jpg_json_paths[frame_name] = {"json": file_path}
 
     mesh_path = os.path.join(str(directory_path), "export_refined.obj")
-    pcd_path = os.path.join(str(directory_path), "pcd.ply")
+    pcd_path = os.path.join(str(directory_path), "mesh.ply")
     assert os.path.exists(mesh_path), f"Mesh file does not exists at {mesh_path}!"
 
     return jpg_json_paths, mesh_path, pcd_path
@@ -100,16 +97,11 @@ def get_best_detection(jpg_json_paths, tag_id: int):
     return best_frame_number, best_detection
 
 
-def get_camera_tform_fiducial(
-    detection,
-    json_path: bytes,
-) -> np.ndarray:
+def get_camera_tform_fiducial(detection, json_path: bytes) -> np.ndarray:
     # get camera intrinsics
     intrinsics = get_camera_intrinsics(json_path)
 
-    points_3D = np.asarray(
-        [[-73, -73, 0], [73, -73, 0], [73, 73, 0], [-73, 73, 0], [0, 0, 0]]
-    ).astype(np.float32)
+    points_3D = np.asarray([[-73, -73, 0], [73, -73, 0], [73, 73, 0], [-73, 73, 0], [0, 0, 0]]).astype(np.float32)
     points_2D = np.vstack([detection.corners, detection.center]).astype(np.float32)
     _, rvec, tvec, _ = cv2.solvePnPRansac(
         objectPoints=points_3D,
@@ -120,8 +112,7 @@ def get_camera_tform_fiducial(
         rvec=detection.homography,
     )
 
-    # build 4x4 camera extrinsics matrix from rvec (to rot mat via rodrigues, and
-    # tvec in meters
+    # build 4x4 camera extrinsics matrix from rvec (to rot mat via rodrigues, and tvec in meters
     extrinsics = np.zeros((4, 4))
     rotation_matrix = cv2.Rodrigues(rvec)[0]
     extrinsics[:3, :3] = rotation_matrix
@@ -162,14 +153,10 @@ def calculate_ground_tform_fiducial(
     corrective_matrix_fiducial: np.ndarray,
 ) -> np.ndarray:
     corr_ground_tform_camera = ground_tform_camera.copy()
-    corr_ground_tform_camera[:3, :3] = (
-        corr_ground_tform_camera[:3, :3] @ corrective_matrix_camera
-    )
+    corr_ground_tform_camera[:3, :3] = (corr_ground_tform_camera[:3, :3] @ corrective_matrix_camera)
     camera_tform_fiducial = corr_ground_tform_camera @ camera_tform_fiducial
     corr_camera_tform_fiducial = camera_tform_fiducial.copy()
-    corr_camera_tform_fiducial[:3, :3] = (
-        corr_camera_tform_fiducial[:3, :3] @ corrective_matrix_fiducial
-    )
+    corr_camera_tform_fiducial[:3, :3] = (corr_camera_tform_fiducial[:3, :3] @ corrective_matrix_fiducial)
     return corr_camera_tform_fiducial
 
 
@@ -203,13 +190,6 @@ def draw_point_clouds(scan: PointCloud, autowalk: PointCloud) -> None:
     o3d.visualization.draw([scan_temp, autowalk_temp])
 
 
-def cuda_to_tensor_pointcloud(cuda_pc):
-    # Convert CUDA-based PointCloud to legacy PointCloud
-    points = np.asarray(cuda_pc.points, dtype=np.float32)
-    legacy_pc = o3d.t.geometry.PointCloud(points)
-    return legacy_pc
-
-
 def render_depth(mesh, camera):
     vis = o3d.visualization.Visualizer()
     vis.create_window(width=1920, height=1440, visible=False)
@@ -235,12 +215,15 @@ def save_ndarray(path: str, array: np.ndarray) -> None:
 
 
 def main() -> None:
-    # paths
+   # Robot distance and orientation compared to AprilTag
+    x_t = 2
+    y_t = -0.1
+    rot = np.radians(20)
+
+    # scan paths
     config = recursive_config.Config()
-    directory_path = config.get_subpath("prescans")
-    directory_path = os.path.join(
-        str(directory_path), config["pre_scanned_graphs"]["high_res"]
-    )
+    directory_path = config.get_subpath("ipad_scans")
+    directory_path = os.path.join(str(directory_path), config["pre_scanned_graphs"]["high_res"])
     jpg_json_paths, mesh_path, pcd_path = fetch_paths(directory_path)
 
     # take first image of scan_ground
@@ -249,18 +232,14 @@ def main() -> None:
     print(f"{best_frame_number=}")
     json_path = jpg_json_paths[best_frame_number]["json"]
 
-    # calculate 4x4 rot + translation matrix ground_tform_fiducial
+    # calculate 4x4 rotation + translation matrix ground_tform_fiducial
     camera_tform_fiducial = get_camera_tform_fiducial(best_detection, json_path)
     ground_tform_camera = get_ground_tform_camera(json_path)
-    # corrective matrices are for correctly rotating the coordinate axes to wished
-    # position
+    # corrective matrices are for correctly rotating the coordinate axes to wished position
     corrective_matrix_camera = get_corrective_matrix_camera()
     corrective_matrix_fiducial = get_corrective_matrix_fiducial()
     ground_tform_fiducial = calculate_ground_tform_fiducial(
-        camera_tform_fiducial,
-        ground_tform_camera,
-        corrective_matrix_camera,
-        corrective_matrix_fiducial,
+        camera_tform_fiducial, ground_tform_camera, corrective_matrix_camera, corrective_matrix_fiducial
     )
     ground_tform_fiducial = correct_to_upright(ground_tform_fiducial)
     fiducial_tform_ground = np.linalg.inv(ground_tform_fiducial)
@@ -268,31 +247,46 @@ def main() -> None:
     # get point clouds
     mesh_ground = o3d.io.read_triangle_mesh(mesh_path, True)
     scan_ground = o3d.io.read_point_cloud(pcd_path)
-    # o3d.visualization.draw_geometries([mesh_ground])
+    # o3d.visualization.draw_geometries([mesh_ground, scan_ground])
 
-    autowalk_ply_path = config.get_subpath("point_clouds")
-    autowalk_ply_path = os.path.join(
-        str(autowalk_ply_path), f'{config["pre_scanned_graphs"]["low_res"]}.ply'
-    )
+    autowalk_ply_path = config.get_subpath("merged_point_clouds")
+    autowalk_ply_path = os.path.join(str(autowalk_ply_path), f'{config["pre_scanned_graphs"]["low_res"]}.ply')
     autowalk_cloud = o3d.io.read_point_cloud(str(autowalk_ply_path))
-    draw_point_clouds(scan_ground, autowalk_cloud)
 
-    scan_fiducial = copy.deepcopy(scan_ground).transform(fiducial_tform_ground)
-    # scan_vis = add_coordinate_system(
-    #     scan_fiducial, (0, 255, 0), np.asarray((0, 0, 0)), size=2
-    # )
-    # o3d.visualization.draw_geometries([scan_vis])
+    translation_matrix = np.array([
+        [1, 0, 0, x_t],
+        [0, 1, 0, y_t],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1]
+    ])
+    rotation_matrix = np.array([
+        [np.cos(rot), -np.sin(rot), 0, 0],
+        [np.sin(rot), np.cos(rot), 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1]
+    ])
+    reflection_matrix = np.array([
+        [-1, 0, 0, 0],
+        [0, -1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 1]
+    ])
 
-    draw_point_clouds(scan_fiducial, autowalk_cloud)
-    fiducial_tform_icp = icp(scan_fiducial, autowalk_cloud, threshold=0.15)
-    icp_tform_fiducial = np.linalg.inv(fiducial_tform_icp)
-    scan_icp = copy.deepcopy(scan_fiducial).transform(icp_tform_fiducial)
-    draw_point_clouds(scan_icp, autowalk_cloud)
+    fiducial_tform_robot = translation_matrix @ rotation_matrix
+    robot_tform_fiducial = np.linalg.inv(fiducial_tform_robot)
+    # draw_point_clouds(scan_ground, autowalk_cloud) # before initial alignment
+
+    scan_fiducial = copy.deepcopy(scan_ground).transform(fiducial_tform_ground).transform(robot_tform_fiducial).transform(reflection_matrix)
+    # draw_point_clouds(scan_fiducial, autowalk_cloud) # after initial alignment
+
+    robot_tform_icp = icp(scan_fiducial, autowalk_cloud, threshold=0.15)
+    icp_tform_robot = np.linalg.inv(robot_tform_icp)
+    scan_icp = copy.deepcopy(scan_fiducial).transform(icp_tform_robot)
+    # draw_point_clouds(scan_icp, autowalk_cloud) # after final alignment
 
     # get full transformation_matrix
-    icp_tform_ground = icp_tform_fiducial @ fiducial_tform_ground
+    icp_tform_ground = icp_tform_robot @ reflection_matrix @ robot_tform_fiducial @ fiducial_tform_ground
     mesh_icp = mesh_ground.transform(icp_tform_ground)
-
     # o3d.visualization.draw_geometries([mesh_icp, scan_icp])
 
     # POINT CLOUD HAS BEEN TRANSFORMED with icp_tform_ground
@@ -301,22 +295,14 @@ def main() -> None:
     save_path = config.get_subpath("aligned_point_clouds")
     save_path = os.path.join(str(save_path), config["pre_scanned_graphs"]["high_res"])
     pose_save_path = os.path.join(save_path, "pose")
-    ground_tform_camera_save_path = os.path.join(
-        pose_save_path, "ground_tform_camera.txt"
-    )
+    ground_tform_camera_save_path = os.path.join(pose_save_path, "ground_tform_camera.txt")
     icp_tform_ground_save_path = os.path.join(pose_save_path, "icp_tform_ground.txt")
     color_save_path = os.path.join(save_path, "color")
     depth_save_path = os.path.join(save_path, "depth")
     intrinsic_save_path = os.path.join(save_path, "intrinsic")
     cloud_save_path = os.path.join(save_path, "scene.ply")
     mesh_save_path = os.path.join(save_path, "mesh.obj")
-    for current_path in (
-        save_path,
-        pose_save_path,
-        color_save_path,
-        depth_save_path,
-        intrinsic_save_path,
-    ):
+    for current_path in (save_path, pose_save_path, color_save_path, depth_save_path, intrinsic_save_path):
         os.makedirs(current_path, exist_ok=False)
 
     intrinsic = None
@@ -326,13 +312,12 @@ def main() -> None:
         jpg = cv2.imread(jpg_path)
         json_path = jpg_json_dict["json"]
         ground_tform_camera = get_ground_tform_camera(json_path)
-        ground_tform_camera[:3, :3] = (
-            ground_tform_camera[:3, :3] @ corrective_matrix_camera
-        )
+        ground_tform_camera[:3, :3] = (ground_tform_camera[:3, :3] @ corrective_matrix_camera)
 
         icp_tform_camera = icp_tform_ground @ ground_tform_camera
         camera_tform_icp = np.linalg.inv(icp_tform_camera)
 
+        # save poses
         pose_path = os.path.join(pose_save_path, f"{frame_nr}.txt")
         save_ndarray(pose_path, np.linalg.inv(camera_tform_icp))
 
@@ -342,27 +327,23 @@ def main() -> None:
         if SAVE_OPENMASK3D:
             height, width = jpg.shape[:2]
             camera = o3d.camera.PinholeCameraParameters()
-            camera.intrinsic = o3d.camera.PinholeCameraIntrinsic(
-                width=width, height=height, intrinsic_matrix=intrinsics
-            )
+            camera.intrinsic = o3d.camera.PinholeCameraIntrinsic(width=width, height=height, intrinsic_matrix=intrinsics)
             camera.extrinsic = camera_tform_icp
             depth, _ = render_depth(mesh_icp, camera)
             # image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) * 255
             image_rgb = jpg
 
+            # save colors and depths
             color_path = os.path.join(color_save_path, f"{frame_nr}.jpg")
             depth_path = os.path.join(depth_save_path, f"{frame_nr}.png")
-
             cv2.imwrite(color_path, cv2.resize(image_rgb, (640, 480)))
             cv2.imwrite(depth_path, cv2.resize(depth, (640, 480)))
             print(f"Save map #{frame_nr}", end="\r")
 
-    # need 4x4 matrix for intrinsics for openmask
+    # need 4x4 matrix for intrinsics for open mask
     intrinsics_4x4 = np.eye(4)
     intrinsics_4x4[:3, :3] = intrinsic
-    save_ndarray(
-        os.path.join(intrinsic_save_path, "intrinsic_color.txt"), intrinsics_4x4
-    )
+    save_ndarray(os.path.join(intrinsic_save_path, "intrinsic_color.txt"), intrinsics_4x4)
     save_ndarray(ground_tform_camera_save_path, ground_tform_camera)
     save_ndarray(icp_tform_ground_save_path, icp_tform_ground)
     o3d.io.write_point_cloud(cloud_save_path, scan_icp)
