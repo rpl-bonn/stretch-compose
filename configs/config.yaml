@@ -19,7 +19,7 @@ pre_scanned_graphs:
   floor: -0.1
   low_res: "2025_02_20"
   high_res: "2025_02_20"
-  masked: ""
+  masked: "2025_02_20"
 
 # paths are relative from project_root_directory
 subpaths:
@@ -36,12 +36,10 @@ subpaths:
   openmask_features: "data/openmask_features"
   scene_graph: "data/scene_graph"
   stretch_description: "data/stretch_description"
-  masks: "data/masked"
+  masks: "data/ipad_scans"
   # environment
   environment: ".environment.yaml"
-  spot_description: "spot_description"
   tmp: "data/tmp"
-  detection_weights: "weights/train30/weights/best.pt"
 
 # dockers
 servers:

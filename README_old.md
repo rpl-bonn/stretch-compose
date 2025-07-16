@@ -1,5 +1,8 @@
+<div align='center'>
 <h2 align="center"> Open-Vocabulary and Semantic-Aware Search and Retrieval of Objects with the Stretch Robot</h2>
-
+Stretch-Compose presents a comprehensive framework for integration of modern machine perception techniques with Stretch, 
+showing experiments with object grasping, object search, and dynamic drawer and door manipulation.
+</div>
 
 # Code Structure
 
@@ -19,78 +22,65 @@ stretch-compose/
 │           └── stretch_state/
 ├── source/                                 # All source code
 │   ├── scripts/
-│   │   ├── llm_scripts/
-│   │   │   ├── deepseek_client.py
-│   │   │   ├── openai_client.py
-│   │   │   └── ...                         # Other llm scripts
-│   │   ├── my_robot_scripts/
-│   │   │   ├── graspnet_planning.py        
-│   │   │   ├── graspnet_execution.py       
-│   │   │   ├── searchnet_planning.py 
-│   │   │   ├── searchnet_execution.py
-│   │   │   └── ...                         # Other pipeline scripts 
-│   │   ├── preprocessing_scripts/
-│   │   │   ├── pointcloud_preprocessing.py
-│   │   │   └── scenegraph_preprocessing.py     
-│   │   ├── mnist_setup.py                  
-│   │   └── urdf_setup.py                     
+│   │   ├── point_cloud_scripts/
+│   │   │   ├── full_align.py
+│   │   │   ├── full_merge.py
+│   │   │   └── point_cloud_preprocessing.py
+│   │   ├── robot_scripts/
+│   │   │   ├── graspnet_planning.py        # ...
+│   │   │   ├── graspnet_execution.py       # ...
+│   │   │   └── ...                         # Other action scripts
+│   │   ├── mnist_setup.py                  # ...
+│   │   └── urdf_setup.py                   # ...   
 │   └── utils/                              # General utility functions
-│       ├── preprocessing_utils/
-│       ├── robot_utils/                    
-│       │   ├── advanced_movement.py        # Advanced movement robot commands
-│       │   ├── basic_movement.py           # Basic movement robot commands
-│       │   ├── basic_perception.py         # Basic perception robot commands
+│       ├── robot_utils/                    # Utility functions specific to stretch functionality
+│       │   ├── advanced_movements.py       # Advanced robot commands (planning, complex movements)
+│       │   ├── base.py                     # Framework and wrapper for all scripts
+│       │   ├── basic_movements.py          # Basic robot commands (moving body / arm, stowing, etc.)
 │       │   ├── frame_transformer.py        # Simplified transformation between frames of reference
-│       │   └── global_parameters.py        
-│       ├── camera_geometry.py              
+│       │   ├── global_parameters.py        # ...
+│       │   └── video.py                    # Handle actions that require access to robot cameras
+│       ├── camera_geometry.py              # ...
 │       ├── coordinates.py                  # Coordinate calculations (poses, translations, etc.)
-│       ├── docker_communication.py         
-│       ├── drawer_detection.py             
-│       ├── environment.py                 
-│       ├── files.py                        
-│       ├── graspnet_interface.py           
-│       ├── importer.py                     
-│       ├── mask3D_interface.py             
-│       ├── object_detection.py            
-│       ├── openmask_interface.py           
+│       ├── docker_communication.py         # Communication with docker servers
+│       ├── drawer_detection.py             # ...
+│       ├── environment.py                  # API keys, env variables
+│       ├── files.py                        # File system handling
+│       ├── graspnet_interface.py           # Communication with graspnet server
+│       ├── importer.py                     # Config-based importing
+│       ├── logger.py                       # ...
+│       ├── logs.py                         # ...
+│       ├── mask3D_interface.py             # Handling of Mask3D instance segmentation
+│       ├── object_detection.py             # ...
+│       ├── openmask_interface.py           # ...
 │       ├── point_clouds.py                 # Point cloud computations
 │       ├── recursive_config.py             # Recursive configuration files
-│       ├── scannet_200_labels.py           
-│       ├── time.py                   
-│       ├── user_input.py                   
+│       ├── scannet_200_labels.py           # Scannet200 labels (for Mask3D)
+│       ├── singletons.py                   # Singletons for global unique access
+│       ├── user_input.py                   # Handle user input
 │       ├── vis.py                          # Handle visualizations
-│       ├── vitpose_interface.py            
+│       ├── vitpose_interface.py            # Handle communications with VitPose docker server
 │       └── zero_shot_object_detection.py   # Object detections from images              
-├── configs/                                                        
-└── shells/                                                          
+├── configs/                                # Configs
+│   └── config.yaml                         # Base configurations
+├── README.md                               # Project documentation
+├── requirements.txt                        # pip requirements file
+├── pyproject.toml                          # Formatter and linter specs
+└── LICENSE
 ```
 
 # Setup Instructions
-The project is build upon a [ROS2 Dev Container](https://docs.ros.org/en/humble/How-To-Guides/Setup-ROS-2-with-VSCode-and-Docker-Container.html) with VSCode and Docker using `Python 3.10`.
+The project is build upon a [ROS2 Dev Container](https://docs.ros.org/en/iron/How-To-Guides/Setup-ROS-2-with-VSCode-and-Docker-Container.html) with VSCode and Docker.
 
-
-## Model Setups
+The main dependencies of the project are the following:
+```yaml
+python: 3.10
+```
 The pre-trained model weights for Yolov-based drawer detection are available [here](https://drive.google.com/file/d/11axGmSgb3zmUtq541hH2TCZ54DwTEiWi/view?usp=drive_link).
 
-The [Mask3D](https://github.com/behretj/Mask3D) repository can be cloned into the `source` folder and setup like this:
-```bash
-git clone https://github.com/behretj/Mask3D.git
-mkdir Mask3D/checkpoints
-cd Mask3D/checkpoints
-wget "https://zenodo.org/records/10422707/files/mask3d_scannet200_demo.ckpt"
-```
-
-The [SAM2](https://github.com/facebookresearch/sam2) repository also needs to be cloned into the `source` folder and setup like this:
-```bash
-git clone https://github.com/facebookresearch/sam2.git
-cd sam2
-pip install -e .
-```
-
-For grasping with [GPD](https://github.com/rpl-bonn/gpd/tree/master) pull and run the docker image as described in the repository. Also clone the repository into the `source` folder and adapt the `run_docker_new.sh` and `cfg/ros_eigen_params.cfg` to fit for your system. To use the docker, start the `run_docker_new.sh` in the terminal.
 
 ## Docker Setup
-Docker containers are used to run external models. This allows for easy modularity when working with multiple methods, without tedious setup.
+Docker containers are used to run external neural networks. This allows for easy modularity when working with multiple methods, without tedious setup.
 Each docker container functions as a self-contained server, answering requests. Please refer to `utils/docker_communication.py` for your own custom setup, 
 or to the respective files in `utils/` for existing containers.
 
@@ -98,12 +88,12 @@ To run the respective docker container, please first pull the desired image via
 ```bash
 docker pull [Link]
 ```
-Once docker has finished pulling the image, you can start a container via the `Run Command` in the terminal.
+Once docker has finished pulling the image, you can start a container via the `Run Command`.
 When you are inside the container shell, simply run the `Start Command` to start the server.
 
 |      Name       |                                                                                   Link                                                                                   |                             Run Command                              |               Start Command               |
 |:---------------:|:------------------------------------------------------------------------------------------------------------------------------------------------------------------------:|:--------------------------------------------------------------------:|:-----------------------------------------:|
-|    AnyGrasp     | [craiden/graspnet:v1.0](https://hub.docker.com/layers/craiden/graspnet/v1.0/images/sha256-ec5663ce991415a51c34c00f2ea6f8ab9303a88e6ac27d418df2193c6ab40707?context=repo) |  ```docker run --net=bridge --mac-address=02:42:ac:11:00:02 -p 5000:5000 --gpus all -it craiden/graspnet:v1.0```  |           ```python3 app.py```            |
+|    AnyGrasp     | [craiden/graspnet:v1.0](https://hub.docker.com/layers/craiden/graspnet/v1.0/images/sha256-ec5663ce991415a51c34c00f2ea6f8ab9303a88e6ac27d418df2193c6ab40707?context=repo) |  ```docker run -p 5000:5000 --gpus all -it craiden/graspnet:v1.0```  |           ```python3 app.py```            |
 |   OpenMask3D    | [craiden/openmask:v1.0](https://hub.docker.com/layers/craiden/openmask/v1.0/images/sha256-023e04ebecbfeb62729352a577edc41a7f12dc4ce780bfa8b8e81eb54ffe77f7?context=repo) |  ```docker run -p 5001:5001 --gpus all -it craiden/openmask:v1.0```  |           ```python3 app.py```            |
 |     ViTPose     |  [craiden/vitpose:v1.0](https://hub.docker.com/layers/craiden/vitpose/v1.0/images/sha256-43a702300a0fffa2fb51fd3e0a6a8d703256ed2d507ac0ba6ec1563b7aee6ee7?context=repo)  |  ```docker run -p 5002:5002 --gpus all -it craiden/vitpose:v1.0```   | ```easy_ViTPose/venv/bin/python app.py``` |
 | DrawerDetection | [craiden/yolodrawer:v1.0](https://hub.docker.com/layers/craiden/yolodrawer/v1.0/images/sha256-2b0e99d77dab40eb6839571efec9789d6c0a25040fbb5c944a804697e73408fb?context=repo) | ```docker run -p 5004:5004 --gpus all -it craiden/yolodrawer:v1.0``` |           ```python3 app.py```            |
@@ -125,7 +115,7 @@ In this project setup, robot and workstation are connected via a separate router
 
 
 ## URDF Setup
-To use inverse kinematics, the urdf of the robot has to be modified. First, copy the urdf from the Stretch robot (`stretch.urdf` and `meshes` folder) into the `data/stretch_description/original_urdf` folder. Run the `urdf_setup.py` file in the `source/scripts` folder. This will save the new urdf into the `data/stretch_description/modified_urdf` folder.
+To use inverse kinematics, the urdf of the robot has to be modified. First, copy the urdf from the Stretch robot (`stretch.urdf` and `meshes` folder) into the `data/stretch_description/urdf` folder. Run the `urdf_setup.py` file in the `source/scripts` folder. This will save the new urdf into the `data/stretch_description/tmp` folder.
 
 
 ## Point Cloud Setup
@@ -148,9 +138,9 @@ As FUNMAP only results in Max Height Images and no Point Cloud, we need to do an
 
 ### High-Resolution iPad Point Cloud
 To capture the point cloud we use the [3D Scanner App](https://apps.apple.com/us/app/3d-scanner-app/id1419913995) on iOS. Make sure the fiducial is visible during the scan.
-1. Choose LiDAR Advanced, set Max Depth to ~2.5-3m and Resolution to ~6-10mm in the 3D Scanner App.
+1. Choose LiDAR Advanced, set Max Depth to ~2.5m and Resolution to ~6mm in the 3D Scanner App.
 2. Scan environment and process Scan HD afterwards.
-3. Save `Share->PointCloud->PLY` with `High Density` enabled and `Z axis up` disabled into the scan folder as `mesh.ply`.
+3. Save `Share->PointCloud->PLY` with `High Density` enabled and `Z axis up` disabled into the scan folder as `pcd.ply`.
 4. Copy LiDAR scan folder into the `data/ipad_scans` folder. The folder structure should look like this:
 ```
 ipad_scans/
@@ -162,7 +152,7 @@ ipad_scans/
 │   ├── frame_00000.json
 │   ├── ...
 │   ├── info.json
-│   ├── mesh.ply
+│   ├── pcd.ply
 │   ├── textured_output.jpg
 │   ├── textured_output.mtl
 │   ├── textured_output.obj
@@ -172,23 +162,34 @@ ipad_scans/
 5. Fill in the name of the folder in `ipad_scans` in the config file under `pre_scanned_graphs/high_res`.
 
 ### Point Cloud Preprocessing
-To merge the Stretch scans into one point cloud and align it with the iPad point cloud, you need to run `pointcloud_preprocessing.py` in the `source/scripts/preprocessing_scripts` folder. This will also run the OpenMask3D Segmentation. 
+To merge the Stretch scans into one point cloud and align it with the iPad point cloud, you need to run `pointcloud_preprocessing.py` in the `source/scripts/point_cloud_scripts` folder. This will also run the OpenMask3D Segmentation. 
 
 After this, your data should contain the following folders:
 ```
-data/
-├── aligned_point_clouds/
-├── autowalk_scans/             # Raw autowalk data
-├── images/                     # Images taken with robot cameras
-├── ipad_scans/                 # Raw prescan data from ipad
-├── merged_point_clouds/        # Merged point clouds from autowalk
-├── openmask_features/          # Mask3D output given aligned point clouds
-├── scene_graph/                # Created scene graph from Mask3D
-└── stretch_description/        # Robot urdf descriptions
+├── data/
+│   ├── aligned_point_clouds/               # IPad point clouds aligned with merged autowalk clouds
+│   ├── autowalk_scans/                     # Raw autowalk data from robot
+│   ├── images/                             # ...
+│   ├── ipad_scans/                         # Raw prescan data from ipad
+│   ├── merged_point_clouds/                # Extracted point clouds from autowalk
+│   ├── openmask_features/                  # Mask3D output given aligned point clouds
+│   └── stretch_description/                # Robot urdf
 ```
 
-### Scene Graph Creation
-To create the scene graph, first run the Mask3D container once. Afterwards, start the YOLO Drawer docker and run the `scenegraph_preprocessing.py` in the `source/scripts/preprocessing_scripts` folder. This will also save the scene graph to different JSON files.
+## Mask3D
+Clone and setup the Mask3D repository like this:
+```bash
+cd $SPOTLIGHT/source/
+git clone https://github.com/behretj/Mask3D.git
+mkdir Mask3D/checkpoints
+cd Mask3D/checkpoints
+wget "https://zenodo.org/records/10422707/files/mask3d_scannet200_demo.ckpt"
+```
+Copy the following files into the `data/ipad_scans/<high_res_name>` folder:
+```
+mask3d_label_mapping.csv
+data/aligned_point_clouds/<high_res_name>/pose/icp_tform_ground.txt
+data/prescans/<high_res_name>/pcd.ply (and rename into mesh.ply)
+```
+Run the Mask3D docker.
 
-## Pipeline Execution
-To run a robot task, launch `stretch_funmap mapping` with the generated map and `stretch_core d405_basic` on the robot. Then, start your desired task execution script from the `source/scripts/my_robot_scripts` folder on the workstation.
