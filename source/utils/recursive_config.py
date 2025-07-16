@@ -35,9 +35,7 @@ class Config:
                 raise AssertionError("Attempting to build recursive configuration.")
 
             # load the .yaml file as a dict
-            config_path = os.path.dirname(
-                os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            )
+            config_path = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
             config_path = os.path.join(config_path, "configs", config)
             with open(config_path, "r", encoding="UTF-8") as file_handle:
                 cfg = yaml.safe_load(file_handle)
@@ -58,9 +56,7 @@ class Config:
         self._config = load_recursive(file, [])
 
         if "project_root_dir" not in self._config:
-            project_root_dir = os.path.dirname(
-                os.path.dirname(os.path.dirname(current_file_path))
-            )
+            project_root_dir = os.path.dirname(os.path.dirname(os.path.dirname(current_file_path)))
             self._config["project_root_dir"] = project_root_dir
 
         self._add_additional_info()
@@ -84,10 +80,7 @@ class Config:
 
         for k, v in additions.items():
             if k in self._config["metadata"]:
-                raise ValueError(
-                    f"Please do not specify a {k} field in the metadata field of the "
-                    f"config, as it is later added in post-processing"
-                )
+                raise ValueError(f"Please do not specify a {k} field in the metadata field of the config, as it is later added in post-processing")
             else:
                 self._config["metadata"][k] = v
 

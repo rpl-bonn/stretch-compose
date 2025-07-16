@@ -49,9 +49,7 @@ def show_depth_image(depth_image: np.ndarray, title: str = "Depth Image"):
     return show_image(colored_image, title)
 
 
-def show_two_geometries_colored(
-    geometry1, geometry2, color1=(1, 0, 0), color2=(0, 1, 0)
-) -> None:
+def show_two_geometries_colored(geometry1, geometry2, color1=(1, 0, 0), color2=(0, 1, 0)) -> None:
     """
     Given two open3d geometries, color them and visualize them.
     :param geometry1:
@@ -82,7 +80,7 @@ def generate_distinct_colors(n: int) -> list[tuple[float, float, float]]:
     - n (int): The number of distinct colors to generate.
 
     Returns:
-    - List[Tuple[int, int, int]]: A list of tuples representing RGB colors.
+    - List[tuple[int, int, int]]: A list of tuples representing RGB colors.
     """
     colors = []
     for i in range(n):
@@ -99,20 +97,16 @@ def generate_distinct_colors(n: int) -> list[tuple[float, float, float]]:
 
 
 def draw_boxes(image: np.ndarray, detections: list[Detection]) -> None:
-    plt.figure(figsize=(16, 10))
-    plt.imshow(image)
-    ax = plt.gca()
+    vis_image = image.copy()
     names = sorted(list(set([det.name for det in detections])))
     names_dict = {name: i for i, name in enumerate(names)}
     colors = generate_distinct_colors(len(names_dict))
-
     for name, conf, (xmin, ymin, xmax, ymax) in detections:
-        w, h = xmax - xmin, ymax - ymin
         color = colors[names_dict[name]]
-        ax.add_patch(
-            plt.Rectangle((xmin, ymin), w, h, fill=False, color=color, linewidth=6)
-        )
-        text = f"{name}: {conf:0.2f}"
-        ax.text(xmin, ymin, text, fontsize=15, bbox=dict(facecolor="yellow", alpha=0.5))
-    plt.axis("off")
-    plt.show()
+        xmin, ymin, xmax, ymax = map(int, [xmin, ymin, xmax, ymax])
+        cv2.rectangle(vis_image, (xmin, ymin), (xmax, ymax), color, thickness=2)
+        label = f"{name}: {conf:.2f}"
+        cv2.putText(vis_image, label, (xmin, max(0, ymin - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+    cv2.imshow("Detections", vis_image)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows() 

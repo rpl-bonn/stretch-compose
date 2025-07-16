@@ -4,21 +4,13 @@ import open3d as o3d
 from utils import vis
 
 
-def plane_fitting_open3d(
-    pcd: np.ndarray,
-    threshold: float = 0.01,
-    min_samples: int = 3,
-    n_iterations: int = 1000,
-    vis_block: bool = False,
-):
+def plane_fitting_open3d(pcd: np.ndarray, threshold: float = 0.01, min_samples: int = 3, n_iterations: int = 1000, vis_block: bool = False):
     points = pcd
     pcd = o3d.geometry.PointCloud()
     pcd.points = o3d.utility.Vector3dVector(points)
 
     # Use RANSAC to find the plane
-    plane_model, inliers = pcd.segment_plane(
-        distance_threshold=threshold, ransac_n=min_samples, num_iterations=n_iterations
-    )
+    plane_model, inliers = pcd.segment_plane(distance_threshold=threshold, ransac_n=min_samples, num_iterations=n_iterations)
 
     if vis_block:
         in_mask = np.zeros((points.shape[0],))
