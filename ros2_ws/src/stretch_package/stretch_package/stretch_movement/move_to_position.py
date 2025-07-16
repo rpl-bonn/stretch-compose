@@ -25,7 +25,7 @@ class JointPositionController(Node):
         self.joint_state = None
         self.done = False
          
-        iktuturdf_path = "/home/ws/data/stretch_description/tmp/stretch.urdf"
+        iktuturdf_path = "/home/ws/data/stretch_description/modified_urdf/stretch.urdf"
         self.chain = ikpy.chain.Chain.from_urdf_file(iktuturdf_path)
         #self.chain.active_links_mask = [link.joint_type != 'fixed' for link in self.chain.links]
         #print("Active links: ", self.chain.active_links_mask)
@@ -37,7 +37,7 @@ class JointPositionController(Node):
         bounds = self.chain.links[index].bounds
         return min(max(value, bounds[0]), bounds[1]) 
             
-    def transform_goal(self, target_pos_map, target_dir_map):
+    def transform_goal(self, target_pos_map, target_dir_map, target_rot_map):
         while rclpy.ok():
             try:
                 if not self.buffer.can_transform('base_link', 'map', Time()):
@@ -50,17 +50,29 @@ class JointPositionController(Node):
                 x = tf.transform.translation
                 t[:3, :3] = Rotation.from_quat([q.x, q.y, q.z, q.w]).as_matrix()
                 t[:3, 3] = [x.x, x.y, x.z]
-                return t.dot(target_pos_map)[:3], t[:3, :3].dot(target_dir_map)
+                
+                pos_base = t.dot(target_pos_map)[:3]
+                dir_base = t[:3, :3].dot(target_dir_map)
+                rot_base = None
+                if target_rot_map is not None:
+                    rot_base = t[:3, :3].dot(target_rot_map)
+                
+                return pos_base, dir_base, rot_base
             except Exception as e:
                 self.get_logger().warn(f"Transform from map to base_link failed: {e}")        
         
-    def calculate_ik(self, pos, dir): 
+    def calculate_ik(self, pos, dir, rot): 
         target_pos_map = np.append(pos, 1.0)
-        target_pos_base, target_dir_base = self.transform_goal(target_pos_map, dir)
+        target_pos_base, target_dir_base, target_rot_base = self.transform_goal(target_pos_map, dir, rot)
         
-        roll = 0.0
-        pitch = np.arctan2(-target_dir_base[2], np.sqrt(target_dir_base[0]**2 + target_dir_base[1]**2))
-        yaw = np.arctan2(target_dir_base[1], target_dir_base[0])
+        if rot is not None:
+            r = Rotation.from_matrix(target_rot_base)
+            roll, pitch, yaw = r.as_euler('xyz', degrees=False)
+            print(f"rot is not none: roll: {roll}, pitch: {pitch}, yaw: {yaw}")
+        else:
+            roll = 0.0
+            pitch = np.arctan2(-target_dir_base[2], np.sqrt(target_dir_base[0]**2 + target_dir_base[1]**2))
+            yaw = np.arctan2(target_dir_base[1], target_dir_base[0])
         target_orientation = ikpy.utils.geometry.rpy_matrix(roll, pitch, yaw)
         print(f"roll: {roll}, pitch: {pitch}, yaw: {yaw}")
         
@@ -82,13 +94,13 @@ class JointPositionController(Node):
 
         err = np.linalg.norm(self.chain.forward_kinematics(q)[:3, 3] - target_pos_base)
         if not np.isclose(err, 0.0, atol=1e-2):
-            print("IKPy did not find a valid solution")
+            self.get_logger().warn("IKPy did not find a valid solution")
 
         return pose
         
-    def send_joint_pos(self, pos, dir, joint_state: JointState):
+    def send_joint_pos(self, pos, dir, joint_state: JointState, rot = None):
         self.joint_state = joint_state
-        pose = self.calculate_ik(pos, dir)
+        pose = self.calculate_ik(pos, dir, rot)
         joint_names = [key for key in pose]
 
         trajectory_point = JointTrajectoryPoint()
@@ -101,7 +113,7 @@ class JointPositionController(Node):
         trajectory_goal.trajectory.points.append(trajectory_point)
 
         self.action_client.wait_for_server()
-        self.get_logger().info('Sending goal to /follow_joint_trajectory')
+        #self.get_logger().info('Sending goal to /follow_joint_trajectory')
         future = self.action_client.send_goal_async(trajectory_goal)
         future.add_done_callback(self.response_callback)
     
@@ -112,7 +124,7 @@ class JointPositionController(Node):
             self.get_logger().error('Goal rejected!')
             self.done = True
             return
-        self.get_logger().info('Goal accepted!')
+        #self.get_logger().info('Goal accepted!')
         future = result.get_result_async()
         future.add_done_callback(self.result_callback)
 
@@ -120,8 +132,6 @@ class JointPositionController(Node):
     def result_callback(self, future):  
         result = future.result().result
         status = future.result().status
-        if status == GoalStatus.STATUS_SUCCEEDED:
-            self.get_logger().info('Goal succeeded! Result: {0}'.format(result))
-        else:
-            self.get_logger().info('Goal failed with status: {0}'.format(status))
+        if status != GoalStatus.STATUS_SUCCEEDED:
+            self.get_logger().error('Goal failed with status: {0}'.format(status))
         self.done = True

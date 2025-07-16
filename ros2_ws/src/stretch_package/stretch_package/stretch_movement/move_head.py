@@ -37,13 +37,16 @@ class HeadJointController(Node):
                 self.get_logger().warn(f"Transform from map to link_head failed: {e}")          
         
         
-    def send_joint_pose(self, pos):
+    def send_joint_pose(self, pos, tilt_bool=True):
         target_point_map = np.append(pos, 1.0) 
         target_point_head = self.transform_goal(target_point_map)
         print(f"target point: {target_point_head}")
         
-        pan = np.arctan2(target_point_head[1], target_point_head[0]) + np.pi/2.0
-        tilt = np.arctan2(target_point_head[2], np.sqrt(target_point_head[0]**2 + target_point_head[1]**2))
+        pan = np.arctan2(target_point_head[0], target_point_head[1])
+        if tilt_bool:
+            tilt = np.arctan2(target_point_head[2], np.sqrt(target_point_head[0]**2 + target_point_head[1]**2))
+        else:
+            tilt = 0.0
         print(f"pan: {pan}, tilt: {tilt}")
         
         joint_names = ['joint_head_pan', 'joint_head_tilt']
@@ -58,7 +61,7 @@ class HeadJointController(Node):
         trajectory_goal.trajectory.points.append(trajectory_point)
         
         self.action_client.wait_for_server()
-        self.get_logger().info('Sending goal to /follow_joint_trajectory')
+        #self.get_logger().info('Sending goal to /follow_joint_trajectory')
         self.future = self.action_client.send_goal_async(trajectory_goal)
         self.future.add_done_callback(self.response_callback)
     
@@ -69,7 +72,7 @@ class HeadJointController(Node):
             self.get_logger().error('Goal rejected!')
             self.done = True
             return
-        self.get_logger().info('Goal accepted!')
+        #self.get_logger().info('Goal accepted!')
         future = result.get_result_async()
         future.add_done_callback(self.result_callback)
       
@@ -77,8 +80,6 @@ class HeadJointController(Node):
     def result_callback(self, future):
         result = future.result().result
         status = future.result().status
-        if status == GoalStatus.STATUS_SUCCEEDED:
-            self.get_logger().info('Goal succeeded! Result: {0}'.format(result))
-        else:
-            self.get_logger().info('Goal failed with status: {0}'.format(status))
+        if status != GoalStatus.STATUS_SUCCEEDED:
+            self.get_logger().error('Goal failed with status: {0}'.format(status))
         self.done = True

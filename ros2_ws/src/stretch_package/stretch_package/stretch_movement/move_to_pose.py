@@ -19,7 +19,11 @@ class JointPoseController(Node):
         joint_names = list(pose.keys())
         
         trajectory_point = JointTrajectoryPoint()
-        trajectory_point.positions = [pose[key] for key in joint_names]
+        poses = [pose[key] for key in joint_names]
+        trajectory_point.positions = [p if isinstance(p, float) else p[0] for p in poses]
+        efforts = [p[1] for p in poses if not isinstance(p, float)]
+        if len(efforts) > 0:
+            trajectory_point.effort = efforts
         trajectory_point.time_from_start = Duration(seconds=3.0).to_msg()
 
         trajectory_goal = FollowJointTrajectory.Goal()
@@ -28,7 +32,7 @@ class JointPoseController(Node):
         trajectory_goal.trajectory.points.append(trajectory_point)
 
         self.action_client.wait_for_server()
-        self.get_logger().info('Sending goal to /follow_joint_trajectory...')
+        #self.get_logger().info('Sending goal to /follow_joint_trajectory...')
         self.goal_future = self.action_client.send_goal_async(trajectory_goal)
         self.goal_future.add_done_callback(self.response_callback)
    
@@ -39,7 +43,7 @@ class JointPoseController(Node):
             self.get_logger().error('Goal rejected!')
             self.done = True
             return
-        self.get_logger().info('Goal accepted!')
+        #self.get_logger().info('Goal accepted!')
         self.result_future = goal_handle.get_result_async()
         self.result_future.add_done_callback(self.result_callback)
      
@@ -47,9 +51,7 @@ class JointPoseController(Node):
     def result_callback(self, future):
         result = future.result().result
         status = future.result().status
-        if status == GoalStatus.STATUS_SUCCEEDED:
-            self.get_logger().info('Goal succeeded! Result: {0}'.format(result))
-        else:
-            self.get_logger().info('Goal failed with status: {0}'.format(status))
+        if status != GoalStatus.STATUS_SUCCEEDED:
+            self.get_logger().error('Goal failed with status: {0}'.format(status))
         self.done = True
                      

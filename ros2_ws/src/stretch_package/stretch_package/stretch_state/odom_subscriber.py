@@ -6,7 +6,7 @@ class OdomSubscriber(Node):
     
     def __init__(self):
         super().__init__('odom_subscriber_node')     
-        self.get_logger().info('Waiting for messages on topic: /odom')
+        #self.get_logger().info('Waiting for messages on topic: /odom')
         self.subscription = self.create_subscription(Odometry, '/odom', self.odom_callback, 10)
         self.odom = None
         self.done = False

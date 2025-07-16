@@ -8,6 +8,9 @@ import pytz
 import struct
 import open3d as o3d
 import numpy as np
+from source.utils.recursive_config import Config
+
+config = Config()
 
 class PointCloudClient(Node):
     
@@ -24,7 +27,7 @@ class PointCloudClient(Node):
 	def send_request(self):
 		req = GetPointcloud.Request()
 		future = self.cli.call_async(req)
-		self.get_logger().info('Request sent.')
+		#self.get_logger().info('Request sent.')
 		future.add_done_callback(self.handle_response)
 
 
@@ -32,7 +35,9 @@ class PointCloudClient(Node):
 		res = future.result()
 		if res.pointcloud.data:
 			self.get_logger().info('Received point cloud.')
-			self.save_pointcloud(res.pointcloud, '/home/ws/data/autowalk_scans/2024_11_06')
+			path = config.get_subpath('autowalk_scans')
+			ending = config["pre_scanned_graphs"]["high_res"]
+			self.save_pointcloud(res.pointcloud, os.path.join(path, ending))
 			self.pc_saved = True
 		else:
 			self.get_logger().warn('No point cloud received.')
@@ -61,15 +66,13 @@ class PointCloudClient(Node):
 			single_cloud = o3d.geometry.PointCloud()
 			single_cloud.points = o3d.utility.Vector3dVector(point_array[:, :3])
 			single_cloud.colors = o3d.utility.Vector3dVector(point_array[:, 3:])
-
 			utc_time = datetime.fromtimestamp(ros_pc2.header.stamp.sec, timezone.utc)
-			cet_time = pytz.utc.localize(utc_time).astimezone(pytz.timezone('Europe/Berlin'))
+			cet_time = utc_time.astimezone(pytz.timezone('Europe/Berlin'))
 			formatted_time = cet_time.strftime('%Y%m%d_%H%M%S')
-			
 			file_name = f"pointcloud_{formatted_time}.ply"
 			single_ply = os.path.join(folder_path, file_name)
 			o3d.io.write_point_cloud(single_ply, single_cloud)
-			self.get_logger().info(f'Saved point cloud to: {single_ply}.')
+			#self.get_logger().info(f'Saved point cloud to: {single_ply}.')
 			
 		except Exception as e:
 			self.get_logger().error(f'Failed to save point cloud: {e}')

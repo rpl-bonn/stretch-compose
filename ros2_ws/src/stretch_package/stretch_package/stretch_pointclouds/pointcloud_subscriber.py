@@ -12,7 +12,7 @@ class PointCloudSubscriber(Node):
         super().__init__('pointcloud_subscriber_node')
         self.pointcloud = None
      
-        self.get_logger().info('Waiting for messages on topic: /camera/depth/color/points')
+        #self.get_logger().info('Waiting for messages on topic: /camera/depth/color/points')
         try:
             _, msg = wait_for_message(PointCloud2, self, '/camera/depth/color/points', time_to_wait=50.0)
             if msg is not None:
@@ -40,7 +40,7 @@ class PointCloudSubscriber(Node):
             z_normalized = z_normalized.astype(np.uint8)
             
             depth_image = z_normalized.reshape((1, len(z_normalized)))
-            self.get_logger().info('Converted PointCloud2 message to OpenCV Image.')     
+            #self.get_logger().info('Converted PointCloud2 message to OpenCV Image.')     
             cv2.imshow('Depth Image', depth_image)
             cv2.waitKey(0) # Wait indefinitely until a key is pressed
             self.get_logger().info('Key pressed, closing the image window.') 

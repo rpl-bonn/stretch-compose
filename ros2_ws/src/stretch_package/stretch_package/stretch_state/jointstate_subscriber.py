@@ -6,7 +6,7 @@ class JointStateSubscriber(Node):
     
     def __init__(self):
         super().__init__('joint_state_subscriber_node')
-        self.get_logger().info('Waiting for messages on topic: /joint_states')
+        #self.get_logger().info('Waiting for messages on topic: /joint_states')
         self.subscription = self.create_subscription(JointState, '/joint_states', self.jointstate_callback, 10)
         self.jointstate = None
         self.done = False

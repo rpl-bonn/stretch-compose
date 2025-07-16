@@ -30,7 +30,7 @@ class BaseController(Node):
         goal_msg.pose = msg
         
         self.action_client.wait_for_server()
-        self.get_logger().info('Sending goal to /move_base')
+        #self.get_logger().info('Sending goal to /move_base')
         self.goal_future = self.action_client.send_goal_async(goal_msg)
         self.goal_future.add_done_callback(self.response_callback)
       
@@ -41,7 +41,7 @@ class BaseController(Node):
             self.get_logger().error('Goal rejected!')
             self.done = True
             return
-        self.get_logger().info('Goal accepted!')
+        #self.get_logger().info('Goal accepted!')
         self.result_future = goal_handle.get_result_async()
         self.result_future.add_done_callback(self.result_callback)
         
@@ -49,8 +49,6 @@ class BaseController(Node):
     def result_callback(self, future):
         result = future.result().result
         status = future.result().status
-        if status == GoalStatus.STATUS_SUCCEEDED:
-            self.get_logger().info('Goal succeeded! Result: {0}'.format(result))
-        else:
-            self.get_logger().info('Goal failed with status: {0}'.format(status))
+        if status != GoalStatus.STATUS_SUCCEEDED:
+            self.get_logger().error('Goal failed with status: {0}'.format(status))
         self.done = True

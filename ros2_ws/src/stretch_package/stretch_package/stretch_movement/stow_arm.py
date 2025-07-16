@@ -7,8 +7,8 @@ class StowArmController(Node):
         super().__init__('stow_arm_controller_node')
         self.stow_client = self.create_client(Trigger, '/stow_the_robot')
         if not self.stow_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().error("Waiting for '/stow_the_robot' service.")
-        self.get_logger().info("Connected to '/stow_the_robot' service.")
+            self.get_logger().warn("Waiting for '/stow_the_robot' service.")
+        #self.get_logger().info("Connected to '/stow_the_robot' service.")
         self.future = None
         
         
@@ -20,7 +20,5 @@ class StowArmController(Node):
         
     def response_callback(self, future):
         self.response = future.result()
-        if self.response.success:
-            self.get_logger().info('Robot stowed successfully.')
-        else:
+        if not self.response.success:
             self.get_logger().error('Failed to stow the robot.')
