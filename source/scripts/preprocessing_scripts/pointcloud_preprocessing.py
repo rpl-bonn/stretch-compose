@@ -1,23 +1,13 @@
 import os
 import time
-from scripts.point_cloud_scripts import full_merge
-from scripts.point_cloud_scripts import full_align
+from utils.preprocessing_utils import full_merge
+from utils.preprocessing_utils import full_align
 from utils.openmask_interface import get_mask_clip_features
 from utils.recursive_config import Config
+from utils.time import convert_time
 import open3d as o3d
-from typing import Tuple
 
-
-def convert_time(nanoseconds: int) -> Tuple[int, int]:
-    """
-    Converts nanoseconds into minutes and seconds.
-    :param nanoseconds: Time in nanoseconds.
-    :return: Time as tuple of minutes and seconds.
-    """
-    minutes = int(nanoseconds / 1e9 // 60)
-    seconds = round((nanoseconds / 1e9) % 60, 2)
-    return minutes, seconds
-
+config = Config()
 
 def show_point_cloud(path, name="Point Cloud") -> None:
     """
@@ -76,24 +66,33 @@ def show_clouds():
     """
     Shows the ipad, autowalk, and aligned point clouds.
     """
-    config = Config()
     base_data_path = config.get_subpath("data")
-    scan_path = os.path.join(str(base_data_path), "ipad_scans", f'{config["pre_scanned_graphs"]["low_res"]}', 'mesh.ply')
+    scan_path = os.path.join(str(base_data_path), "ipad_scans", f'{config["pre_scanned_graphs"]["high_res"]}', 'mesh.ply')
     autowalk_path = os.path.join(str(base_data_path), "merged_point_clouds", f'{config["pre_scanned_graphs"]["low_res"]}.ply')
-    aligned_path = os.path.join(str(base_data_path), "aligned_point_clouds", f'{config["pre_scanned_graphs"]["low_res"]}', 'scene.ply')
+    aligned_path = os.path.join(str(base_data_path), "aligned_point_clouds", f'{config["pre_scanned_graphs"]["high_res"]}', 'scene.ply')
 
-    show_point_cloud(scan_path, name="Lidar scan")
+    show_point_cloud(scan_path, name="IPad scan")
     show_point_cloud(autowalk_path, name="Autowalk scan")
     show_point_cloud(aligned_path, name="Aligned point cloud")
+    
+def show_object_and_grasps():
+    """
+    Shows the object point cloud, limited environment point cloud and grasps.
+    """
+    show_point_cloud("/home/ws/data/images/viewpoints/env_cloud_vp.ply", name="Env cloud")
+    show_point_cloud("/home/ws/data/images/viewpoints/obj_cloud_vp.ply", name="Obj cloud")
+    show_point_cloud("/home/ws/data/images/predicted_grasps.ply", name="Predicted grasps")
+    show_point_cloud("/home/ws/data/images/filtered_grasps.ply", name="Filtered grasps")
+    show_point_cloud("/home/ws/data/images/final_grasp.ply", name="Final grasps")
 
 
 def main() -> None:
-    #merge_clouds()
-    #align_clouds()
-    # DON'T FORGET TO RUN: docker run -p 5001:5001 --gpus all -it craiden/openmask:v1.0 python3 app.py
-    #get_mask()
+    # docker run -p 5001:5001 --gpus all -it craiden/openmask:v1.0 python3 app.py
+    merge_clouds()
+    align_clouds()
+    get_mask()
     show_clouds()
-
+    show_object_and_grasps()
 
 if __name__ == "__main__":
     main()
