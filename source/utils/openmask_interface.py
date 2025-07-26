@@ -13,6 +13,7 @@ from urllib3.exceptions import ReadTimeoutError
 from utils import recursive_config
 from utils.docker_communication import _get_content
 from utils.recursive_config import Config
+from sklearn.cluster import DBSCAN
 
 MODEL, PREPROCESS = clip.load("ViT-L/14@336px", device="cpu")
 
@@ -52,9 +53,7 @@ def get_mask_clip_features() -> None:
     server_address = f"http://localhost:{PORT}/openmask/save_and_predict"
     with open(zipfile, "rb") as f:
         try:
-            response = requests.post(
-                server_address, files={"scene": f}, params=kwargs, timeout=900
-            )
+            response = requests.post(server_address, files={"scene": f}, params=kwargs, timeout=900)
         except ReadTimeoutError:
             print("Request timed out!")
             return
@@ -71,7 +70,7 @@ def get_mask_clip_features() -> None:
 
     save_path = config.get_subpath("openmask_features")
     save_path = os.path.join(save_path, ending)
-    os.makedirs(save_path, exist_ok=False)
+    os.makedirs(save_path, exist_ok=True)
     feature_path = os.path.join(str(save_path), "clip_features.npy")
     mask_path = os.path.join(str(save_path), "scene_MASKS.npy")
     np.save(feature_path, features)
@@ -93,9 +92,7 @@ def get_mask_points(item: str, config, idx: int = 0, vis_block: bool = False):
     base_path = config.get_subpath("openmask_features")
     feat_path = os.path.join(base_path, pcd_name, "clip_features_comp.npy")
     mask_path = os.path.join(base_path, pcd_name, "scene_MASKS_comp.npy")
-    pcd_path = os.path.join(
-        config.get_subpath("aligned_point_clouds"), pcd_name, "scene.ply"
-    )
+    pcd_path = os.path.join(config.get_subpath("aligned_point_clouds"), pcd_name, "scene.ply")
 
     features = np.load(feat_path)
     masks = np.load(mask_path)
@@ -112,22 +109,33 @@ def get_mask_points(item: str, config, idx: int = 0, vis_block: bool = False):
     with torch.no_grad():
         text_features = MODEL.encode_text(text)
 
-    cos_sim = torch.nn.functional.cosine_similarity(
-        torch.Tensor(features), text_features, dim=1
-    )
+    cos_sim = torch.nn.functional.cosine_similarity(torch.Tensor(features), text_features, dim=1)
     values, indices = torch.topk(cos_sim, idx + 1)
     most_sim_feat_idx = indices[-1].item()
-    print(f"{most_sim_feat_idx=}", f"value={values[-1].item()}")
+    print(f"{item}: {most_sim_feat_idx=}", f"value={values[-1].item()}")
     # idx = 1
     mask = masks[:, most_sim_feat_idx].astype(bool)
 
     pcd = o3d.io.read_point_cloud(str(pcd_path))
-    pcd_in = pcd.select_by_index(np.where(mask)[0])
+
+    # Apply DBSCAN clustering to the object masks & select largest cluster
+    selected_points = np.where(mask)[0]
+    points = np.asarray(pcd.points)
+    selected_point_coords = points[selected_points]
+
+    db = DBSCAN(eps=0.05, min_samples=10).fit(selected_point_coords)
+
+    unique_labels, counts = np.unique(db.labels_, return_counts=True)
+    largest_cluster_label = unique_labels[np.argmax(counts)]
+    cluster_points_idx = selected_points[db.labels_ == largest_cluster_label]
+
+    pcd_in = pcd.select_by_index(cluster_points_idx)
+    #pcd_in = pcd.select_by_index(np.where(mask)[0])
     pcd_out = pcd.select_by_index(np.where(~mask)[0])
 
     if vis_block:
         pcd_in.paint_uniform_color([1, 0, 1])
-        o3d.visualization.draw_geometries([pcd_in, pcd_out])
+        o3d.visualization.draw_geometries([pcd_in, pcd_out], window_name=item)
 
     return pcd_in, pcd_out
 
@@ -137,7 +145,7 @@ def get_mask_points(item: str, config, idx: int = 0, vis_block: bool = False):
 ########################################################################################
 
 
-def visualize():
+def _test_mask_points():
     item = "cabinet, shelf"
     config = Config()
     for i in range(15):
@@ -146,5 +154,4 @@ def visualize():
 
 
 if __name__ == "__main__":
-    # get_mask_clip_features()
-    visualize()
+    _test_mask_points()

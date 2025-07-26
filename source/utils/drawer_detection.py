@@ -14,26 +14,19 @@ from utils.docker_communication import save_files, send_request
 from utils.files import prep_tmp_path
 from utils.object_detetion import BBox, Detection, Match
 from utils.recursive_config import Config
-from utils.vis import draw_boxes
+from utils.vis import draw_boxes, generate_distinct_colors
 
 COLORS = {
     "door": (0.651, 0.243, 0.957),
     "handle": (0.522, 0.596, 0.561),
     "cabinet door": (0.549, 0.047, 0.169),
-    "refrigerator door": (0.082, 0.475, 0.627),
+    "cabinet door": (0.082, 0.475, 0.627),
 }
 
-CATEGORIES = {"0": "door", "1": "handle", "2": "cabinet door", "3": "refrigerator door"}
+CATEGORIES = {"0": "door", "1": "handle", "2": "cabinet drawer", "3": "cabinet door"}
 
 
-def predict_yolodrawer(
-    image: np.ndarray,
-    config: Config,
-    logger: Optional[Logger] = None,
-    timeout: int = 90,
-    input_format: str = "rgb",
-    vis_block: bool = False,
-) -> list[Detection] | None:
+def predict_yolodrawer(image: np.ndarray, config: Config, logger: Optional[Logger] = None, timeout: int = 90, input_format: str = "rgb", vis_block: bool = False) -> list[Detection] | None:
     assert image.shape[-1] == 3
     if input_format == "bgr":
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -70,18 +63,24 @@ def predict_yolodrawer(
 
     if vis_block:
         draw_boxes(image, detections)
-
+    else:
+        vis_image = image.copy()
+        names = sorted(list(set([det.name for det in detections])))
+        names_dict = {name: i for i, name in enumerate(names)}
+        colors = generate_distinct_colors(len(names_dict))
+        for name, conf, (xmin, ymin, xmax, ymax) in detections:
+            color = colors[names_dict[name]]
+            xmin, ymin, xmax, ymax = map(int, [xmin, ymin, xmax, ymax])
+            cv2.rectangle(vis_image, (xmin, ymin), (xmax, ymax), color, thickness=2)
+            label = f"{name}: {conf:.2f}"
+        cv2.putText(vis_image, label, (xmin, max(0, ymin - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        IMG_DIR = config.get_subpath("images")
+        vis_path = os.path.join(IMG_DIR, "gripper_drawers.png")
+        plt.imsave(vis_path, vis_image)
     return detections
 
 
-def predict_darknet(
-    image: np.ndarray,
-    config: Config,
-    logger: Optional[Logger] = None,
-    timeout: int = 90,
-    input_format: str = "rgb",
-    vis_block: bool = False,
-) -> list[Detection] | None:
+def predict_darknet(image: np.ndarray, config: Config, logger: Optional[Logger] = None, timeout: int = 90, input_format: str = "rgb", vis_block: bool = False) -> list[Detection] | None:
     assert image.shape[-1] == 3
     if input_format == "bgr":
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
@@ -147,9 +146,7 @@ def drawer_handle_matches(detections: list[Detection]) -> list[Match]:
         ioa = intersection_area / handle_area
         return ioa
 
-    def matching_score(
-        drawer: Detection, handle: Detection, ioa_weight: float = 10.0
-    ) -> tuple[float, float]:
+    def matching_score(drawer: Detection, handle: Detection, ioa_weight: float = 10.0) -> tuple[float, float]:
         _, drawer_conf, _ = drawer
         ioa = calculate_ioa(drawer, handle)
         if ioa == 0:
@@ -164,9 +161,7 @@ def drawer_handle_matches(detections: list[Detection]) -> list[Match]:
     matching_scores = np.zeros((len(drawer_detections), len(handle_detections), 2))
     for didx, drawer_detection in enumerate(drawer_detections):
         for hidx, handle_detection in enumerate(handle_detections):
-            matching_scores[didx, hidx] = np.array(
-                matching_score(drawer_detection, handle_detection)
-            )
+            matching_scores[didx, hidx] = np.array(matching_score(drawer_detection, handle_detection))
     drawer_idxs, handle_idxs = linear_sum_assignment(-matching_scores[..., 0])
     matches = [
         Match(drawer_detections[drawer_idx], handle_detections[handle_idx])
@@ -195,10 +190,8 @@ def drawer_handle_matches(detections: list[Detection]) -> list[Match]:
 def _test_pose() -> None:
     config = Config()
     base_path = config.get_subpath("data")
-    dir_path = os.path.join(base_path, "test", "iCloud Photos")
-    image_names = [
-        "IMG_1885.jpg",
-    ]
+    dir_path = os.path.join(base_path, "images")
+    image_names = ["frame_06.png", "frame_08.png"]
     for image_name in image_names:
         img_path = os.path.join(dir_path, image_name)
         image = cv2.imread(img_path)

@@ -23,7 +23,7 @@ def is_valid_label(item: str) -> bool:
     return item in CLASS_LABELS_200
 
 
-def _get_list_of_items(folder_path: str) -> pd.DataFrame:
+def _get_list_of_items(folder_path: str, drawers: bool = False) -> pd.DataFrame:
     """
     Read the csv that includes the output from Mask3D.
     It is a 3-column csv, which specifies the file that indexes the points belonging to the object, its label, and the
@@ -31,19 +31,16 @@ def _get_list_of_items(folder_path: str) -> pd.DataFrame:
     :param folder_path: path of folder containing the csv
     :return: pandas dataframe of the csv
     """
-    dir_, base = os.path.split(folder_path)
-    csv_path = os.path.join(dir_, base, f"{base}.txt")
+    if drawers:
+        csv_path = os.path.join(folder_path, "predictions_drawers.txt")
+    else:
+        csv_path = os.path.join(folder_path, "drawers.txt")
     df = pd.read_csv(csv_path, delimiter=" ", header=None)
     df.columns = ["path_ending", "class_label", "confidence"]
     return df
 
 
-def get_coordinates_from_item(
-    item: str,
-    folder_path: str | bytes,
-    point_cloud_path: str | bytes,
-    index: int = 0,
-) -> (PointCloud, PointCloud):
+def get_coordinates_from_item(item: str, folder_path: str | bytes, point_cloud_path: str | bytes, index: int = 0) -> tuple[PointCloud, PointCloud]:
     """
     Given an item description, we extract all points that are part of this item.
     Returns two point clouds, one representing the item, the other the rest.
@@ -83,10 +80,7 @@ def get_coordinates_from_item(
     return item_cloud, environment_cloud
 
 
-def get_all_item_point_clouds(
-    folder_path: str | bytes,
-    point_cloud_path: str | bytes,
-) -> list[PointCloud]:
+def get_all_item_point_clouds(folder_path: str | bytes, point_cloud_path: str | bytes) -> list[PointCloud]:
     """
     TODO
     """

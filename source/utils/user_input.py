@@ -48,12 +48,7 @@ def get_yes_no_answer(prompt: str, max_retries: int = 3, default: bool = False) 
     return default
 
 
-def confirm_coordinates(
-    start_pose: Pose2D,
-    end_pose: Pose2D,
-    destination_pose: Pose2D,
-    distance: float,
-) -> bool:
+def confirm_coordinates(start_pose: Pose2D, end_pose: Pose2D, destination_pose: Pose2D, distance: float) -> bool:
     """
     Confirm movement to distanced position.
     :param start_pose: starting coordinates
@@ -69,10 +64,7 @@ def confirm_coordinates(
     return answer
 
 
-def confirm_move(
-    start_pose: Pose2D,
-    end_pose: Pose2D,
-):
+def confirm_move(start_pose: Pose2D, end_pose: Pose2D):
     """
     Confirm movement to a position.
     :param start_pose: starting coordinates
@@ -85,9 +77,7 @@ def confirm_move(
     return answer
 
 
-def get_n_word_answer(
-    prompt: str, nr_words: int = -1, max_retries: int = 3, add_linebreak: bool = True
-) -> list[str]:
+def get_n_word_answer(prompt: str, nr_words: int = -1, max_retries: int = 3, add_linebreak: bool = True) -> list[str]:
     """
     Get an answer consisting of n words.
     :param prompt: Question to ask, include question mark (?)

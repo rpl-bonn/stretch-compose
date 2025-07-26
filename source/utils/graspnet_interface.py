@@ -11,15 +11,10 @@ from logging import Logger
 from typing import Any, Optional
 
 import numpy as np
-
+import math
 import open3d as o3d
 from utils import recursive_config
-from utils.coordinates import (
-    Pose3D,
-    _rotation_from_direction,
-    get_uniform_sphere_directions,
-    remove_duplicate_rows,
-)
+from utils.coordinates import (Pose3D,_rotation_from_direction,get_uniform_sphere_directions,remove_duplicate_rows)
 from utils.docker_communication import save_files, send_request
 from utils.files import prep_tmp_path
 from utils.importer import PointCloud
@@ -29,10 +24,9 @@ from utils.recursive_config import Config
 
 # CONSTANTS
 # max gripper width is 0.175m, but in nn is 0.100m, therefore we scale models
-SCALE = 0.1 / 0.175
-# MAX_GRIPPER_WIDTH = 0.06
-MAX_GRIPPER_WIDTH = 0.07
-GRIPPER_HEIGHT = 0.24227 * SCALE
+SCALE = 0.1 / 0.15 #0.175
+MAX_GRIPPER_WIDTH = 0.12 #0.07
+GRIPPER_HEIGHT = 0.31 * SCALE #0.24227
 
 
 def _get_rotation_matrices(resolution: int) -> np.ndarray:
@@ -65,9 +59,44 @@ def _get_rotation_matrices(resolution: int) -> np.ndarray:
     return rot_matrices
 
 
-def _filter(
-    contents: dict, item_cloud: PointCloud, limits: np.ndarray, thresh: float = 0.02
-) -> list[(int, int)]:
+def _get_circle_rotation_matrices(resolution: int) -> np.ndarray:
+    """
+    Generate rotation matrices for directions uniformly distributed in a circle 
+    planar region around an object.
+    :param resolution: Number of angles along the circle.
+    :return: Rotation matrices of shape (nr_angles, 3, 3)
+    """
+    theta = np.linspace(0, 2*math.pi, resolution+1)
+    phi = math.pi / 2  # Fix phi at 90 degrees (perpendicular to the z-axis)
+    
+    directions = []
+    for angle in theta:
+        x = math.cos(angle) * math.sin(phi)
+        y = math.sin(angle) * math.sin(phi)
+        z = math.cos(phi)
+        directions.append([x, y, z])
+    
+    directions = np.array(directions)
+    directions = -directions
+    
+    rot_matrices = []
+    invariant_direction = (0, 0, 1)
+    # convert from directions to rotation matrices to look at the object from there
+    for direction in directions:
+        direction = tuple(direction.tolist())
+        rot_matrix = _rotation_from_direction(
+            direction,
+            roll=0,
+            invariant_direction=invariant_direction,
+            degrees=False,
+            invert=True,
+        )
+        rot_matrices.append(rot_matrix)
+    rot_matrices = np.stack(rot_matrices)
+    return rot_matrices
+
+
+def _filter(contents: dict, item_cloud: PointCloud, env_cloud: PointCloud, limits: np.ndarray, thresh: float = 0.02) -> list[(int, int)]:
     """
     Filter for all grasps that have a positive score (i.e. exist), and are on the item point cloud.
     :param contents: contents of the request
@@ -99,23 +128,61 @@ def _filter(
             min_distance = np.min(distances, axis=0)
             if min_distance >= thresh:
                 continue
+            rotation_matrix = tf_matrix[:3, :3]
+            grasp_direction = rotation_matrix[:, 2]
+            vertical_axis = np.array([0, 0, 1])
+            angle_with_vertical = np.arccos(np.abs(np.dot(grasp_direction, vertical_axis)))
+            if angle_with_vertical < 2*thresh:
+                continue
+            #if check_for_obstacle(tf_matrix, env_cloud, max_range=0.2):
+                #continue 
             indices.append((idx_rot, idx_nr))
     return indices
 
+def check_for_obstacle(tf_matrix: np.ndarray, env_cloud: PointCloud, max_range: float = 0.1) -> bool:
+    """
+    Check if there is an obstacle in the opposite direction of the grasp.
+    
+    :param tf_matrix: The transformation matrix for the grasp (3x3 rotation + 1x3 translation).
+    :param env_cloud: The environment point cloud (object to check for obstacles).
+    :param max_range: The maximum range to check for obstacles (default is 0.2m).
+    :return: True if there is an obstacle within max_range, False otherwise.
+    """
+    # Extract the rotation matrix (3x3) and translation vector (3x1) from the transformation matrix
+    rotation_matrix = tf_matrix[:3, :3]
+    translation_vector = tf_matrix[:3, 3]
+    
+    # Grasp direction is the z-axis of the rotation matrix
+    grasp_direction = rotation_matrix[:, 2]  # This is the z-axis direction of the gripper
+
+    # The opposite direction of the grasp
+    opposite_direction = -grasp_direction
+    
+    # Get the points from the environment cloud (the obstacles)
+    env_points = np.asarray(env_cloud.points)
+    
+    # Calculate the vector from the grasp point to each environment point
+    direction_vectors = env_points - translation_vector  # Direction from the grasp to each obstacle point
+    
+    # Compute the projection of the direction vectors onto the opposite direction
+    projections = np.dot(direction_vectors, opposite_direction)
+    
+    # Now check if any of the environment points are in the opposite direction and within the range
+    for i, projection in enumerate(projections):
+        if projection > 0:  # The point is in the opposite direction of the grasp
+            distance_to_point = np.linalg.norm(direction_vectors[i])  # Distance to the obstacle
+            if distance_to_point <= max_range:  # If it's within the maximum range
+                return True  #obstacle in the opposite direction
+    
+    return False  # No obstacle in the opposite direction
 
 def get_k_best_scores(scores_dict: dict[Any, float], k: int) -> list[tuple[Any, float]]:
     """
     Returns the k elements with the highest scores from scores_dict.
-
-    Args:
-    scores_dict (Dict[Any, float]): A dictionary with elements as keys and their scores as values.
-    k (int): The number of top elements to return.
-
-    Returns:
-    List[Tuple[Any, float]]: A list of tuples containing the k elements with the highest scores and their corresponding scores.
+    :param scores_dict: A dictionary with elements as keys and their scores as values.
+    :param k: The number of top elements to return.
+    :return: A list of tuples containing the k elements with the highest scores and their corresponding scores.
     """
-    # Use heapq.nlargest to find the k elements with the highest scores
-    # It requires an iterable and a function (lambda x: x[1]) to extract comparison keys (scores in this case)
     k_best = heapq.nlargest(k, scores_dict.items(), key=lambda x: x[1])
 
     return k_best
@@ -133,20 +200,22 @@ def _predict(
     timeout: int = 90,
     top_down_grasp: bool = False,
     vis_block: bool = False,
-) -> (np.ndarray, np.ndarray, np.ndarray):
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Predict grasps using graspnet
+    Predict grasps using graspnet.
     :param item_cloud: the point cloud of the item we want to grasp
     :param env_cloud: the point cloud of the environment (for grasp filtering)
     :param limits: spatial limits within which to search for gras, shape (2, 3) with rows being minimum and maximum
     x,y,z respectively
     :param rotations: rotations of the scene (to predict grasps from different angles)
-    :param config:
-    :param logger:
+    :param config: config file
+    :param logger: logger
     :param top_n: per viewing angle, how many grasps to predict
+    :param n_best: How many grasps to return
     :param timeout: timeout for the server request
     :param top_down_grasp: allow for top-down grasps (not 100% sure about this, no documentation in graspnet)
     :param vis_block: whether to block execution for intermediate visualization
+    :return: tf_returns (transformation), width_returns, score_returns
     """
     assert limits.shape == (2, 3)
     assert rotations.shape[-2:] == (3, 3)
@@ -175,9 +244,7 @@ def _predict(
         ("limits.npy", np.save, limits),
         ("rotations.npy", np.save, rotations),
     ]
-    points_path, colors_path, limits_path, rotations_path = save_files(
-        save_data, tmp_path
-    )
+    points_path, colors_path, limits_path, rotations_path = save_files(save_data, tmp_path)
 
     paths_dict = {
         "points": points_path,
@@ -197,7 +264,7 @@ def _predict(
     widthss = contents["widthss"]
 
     # get the indices of the valid grasp positions (viewing angle, nr)
-    good_indices = _filter(contents, item_cloud, limits)
+    good_indices = _filter(contents, item_cloud, env_cloud, limits)
     # select corresponding transformation matrices, scores, and widths
     tf_matrices_dict = {(rot, nr): tf_matricess[rot, nr] for (rot, nr) in good_indices}
     scores_dict = {(rot, nr): scoress[rot, nr] for (rot, nr) in good_indices}
@@ -206,17 +273,7 @@ def _predict(
     maxes = get_k_best_scores(scores_dict, k=n_best)
 
     if vis_block:
-        # ball_sizes = np.asarray((0.02, 0.011, 0.005)) * SCALE
-        # ball_sizes = o3d.utility.DoubleVector(ball_sizes)
-        # mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
-        #     pcd, radii=ball_sizes
-        # )
-        grippers = {
-            (rot, nr): contents[f"mesh_{rot:03}_{nr:03}"] for rot, nr in good_indices
-        }
-        # visualize all best per angle
-        o3d.visualization.draw_geometries([pcd, *grippers.values()])
-        # visualize best gripper only
+        grippers = {(rot, nr): contents[f"mesh_{rot:03}_{nr:03}"] for rot, nr in good_indices}
         grippers_display = [grippers[argmax] for (argmax, _) in maxes]
         o3d.visualization.draw_geometries([pcd, *grippers_display])
         o3d.visualization.draw_geometries([pcd, grippers_display[0]])
@@ -248,7 +305,7 @@ def predict_full_grasp(
     n_best: int = 1,
     timeout: int = 90,
     vis_block: bool = False,
-) -> (np.ndarray, np.ndarray, np.ndarray):
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Predict a grasp position from the item point cloud and its environment.
     :param item_cloud: the point cloud of the item to be grasped
@@ -257,6 +314,7 @@ def predict_full_grasp(
     :param logger: for logging
     :param rotation_resolution: number of different angles for grasp detection
     :param top_n: number of different grasps per angle
+    :param n_best: how many grasps to return
     :param timeout: seconds for http request timeout
     :param vis_block: visualize grasp before returning
     :return: transformation matrix and width of best found grasp
@@ -266,6 +324,7 @@ def predict_full_grasp(
     item_points = np.asarray(item_cloud.points)
     mins, maxs = np.min(item_points, axis=0), np.max(item_points, axis=0)
     limits = np.stack([mins, maxs], axis=0)
+    limits[1,2] = min(limits[1,2], 1.15) # limit grasp height to 1.2
 
     tf_matrices, widths, scores = _predict(
         item_cloud,
@@ -293,7 +352,7 @@ def predict_partial_grasp(
     top_n: int = 5,
     timeout: int = 90,
     vis_block: bool = False,
-) -> (np.ndarray, float):
+) -> tuple[np.ndarray, float]:
     """
     Predict a grasp position from the item point cloud and its environment.
     :param pcd: the point cloud of the item to be grasped, coordinate system must be
@@ -320,9 +379,7 @@ def predict_partial_grasp(
     frame_width = 0.03
     mins_ext = mins - frame_width
     maxs_ext = maxs + frame_width
-    inside_ext_points = np.all(mins_ext <= points, axis=1) & np.all(
-        points <= maxs_ext, axis=1
-    )
+    inside_ext_points = np.all(mins_ext <= points, axis=1) & np.all(points <= maxs_ext, axis=1)
     inside_ext_points_idx = np.where(inside_ext_points)[0].tolist()
 
     item_cloud = pcd.select_by_index(inside_points_idx)
@@ -358,14 +415,12 @@ def predict_partial_grasp(
 
 def _test_full_grasp() -> None:
     config = Config()
-    ITEM, INDEX = "green watering can", 0
+    ITEM, INDEX = "bottle", 0
     RADIUS = 0.75
     RES = 16
     VIS_BLOCK = True
 
-    item_cloud, environment_cloud = get_mask_points(
-        ITEM, config, idx=INDEX, vis_block=True
-    )
+    item_cloud, environment_cloud = get_mask_points(ITEM, config, idx=INDEX, vis_block=True)
     if VIS_BLOCK:
         o3d.visualization.draw_geometries([item_cloud])
     lim_env_cloud = get_radius_env_cloud(item_cloud, environment_cloud, RADIUS)
@@ -388,7 +443,7 @@ def _test_full_grasp() -> None:
     print(tf_matrices)
 
 
-def _test_limited_grasp() -> None:
+def _test_partial_grasp() -> None:
     IMAGE_NR = 119
     DIMS = 1920, 1440
     TOLERANCE = 0.1
@@ -416,12 +471,10 @@ def _test_limited_grasp() -> None:
     # grip = copy.deepcopy(sphere).translate(grip_pose.as_ndarray())
     # o3d.visualization.draw_geometries([pcd, sphere, grip])
 
-    tf_matrix, width = predict_partial_grasp(
-        pcd, grip_pose, TOLERANCE, config, None, vis_block=True
-    )
+    tf_matrix, width = predict_partial_grasp(pcd, grip_pose, TOLERANCE, config, None, vis_block=True)
     print(tf_matrix, width)
 
 
 if __name__ == "__main__":
     _test_full_grasp()
-    # _test_limited_grasp()
+    # _test_partial_grasp()
