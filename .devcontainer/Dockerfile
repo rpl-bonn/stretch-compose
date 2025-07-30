@@ -2,6 +2,19 @@ ARG DOCKER_REPO
 ARG ROS_DISTRO
 ARG IMAGE_SUFFIX
 FROM $DOCKER_REPO:$ROS_DISTRO$IMAGE_SUFFIX
+
+# ──────────────────────────── [NEW] KEY FIX ──────────────────────────────────
+# The ROS 2 signing key that ships in images built before 2025‑06‑01 is
+# expired.  Refresh it *before* the first apt-get update to avoid “EXPKEYSIG”.
+RUN set -eux; \
+    apt-get update || true;                                           \
+    apt-get install -y --no-install-recommends curl gnupg;            \
+    rm -f /usr/share/keyrings/ros-archive-keyring.gpg || true;        \
+    curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+         -o /usr/share/keyrings/ros-archive-keyring.gpg
+# ────────────────────────── [END KEY FIX] ────────────────────────────────────
+
+
 ARG USERNAME
 ARG USER_UID=1000
 ARG USER_GID=$USER_UID
