@@ -10,6 +10,7 @@ from scipy.spatial import KDTree
 from typing import Optional
 
 from utils.preprocessing_utils.graph_nodes import DrawerNode, ObjectNode
+from PIL import Image, ImageDraw, ImageFont
 
 class SceneGraph:
     """
@@ -573,6 +574,87 @@ class SceneGraph:
         
         # Run the application
         gui.Application.instance.run()
+        
+    def save_visualization(self, filename: str = None, centroids: bool = True,
+                        connections: bool = True, labels: bool = False,
+                        frame_center: bool = False, width: int = 1024,
+                        height: int = 1024) -> str:
+        """
+        Saves a rendered image of the scene graph instead of displaying an interactive window.
+
+        :param filename: Optional filename for the saved image. If None, auto-generates a timestamped file.
+        :param centroids: Boolean flag to display centroids of objects.
+        :param connections: Boolean flag to display connections between nodes.
+        :param labels: Boolean flag to display labels for each node.
+        :param frame_center: Boolean flag to display coordinate frame.
+        :param width: Image width in pixels.
+        :param height: Image height in pixels.
+        :return: Path of the saved image.
+        """
+
+        geometries = self.scene_geometries(centroids, connections)
+
+        # Initialize offscreen renderer
+        renderer = o3d.visualization.rendering.OffscreenRenderer(width, height)
+        scene = renderer.scene
+        scene.set_background([1.0, 1.0, 1.0, 1.0])  # white background
+
+        # Default material
+        mat = o3d.visualization.rendering.MaterialRecord()
+        mat.shader = "defaultLit"
+
+        # Add geometries
+        for geometry, name, material in geometries:
+            scene.add_geometry(name, geometry, material if material else mat)
+
+        if frame_center:
+            coord_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5, origin=[0, 0, 0])
+            scene.add_geometry("Coordinate Frame", coord_frame, mat)
+
+        # Setup camera
+        if geometries:
+            bounds = geometries[0][0].get_axis_aligned_bounding_box()
+            for geometry, _, _ in geometries[1:]:
+                bounds += geometry.get_axis_aligned_bounding_box()
+            scene.camera.look_at(bounds.get_center(),
+                                bounds.get_center() + [0, 0, -1],
+                                [0, -1, 0])
+            scene.camera.set_projection(60.0, float(width)/height, 0.1, 100.0)
+
+        # Render scene
+        img = renderer.render_to_image()
+
+        # Save filename
+        if filename is None:
+            current_time = datetime.datetime.now().strftime("%m%d-%H%M%S")
+            filename = f"screenshot_{current_time}.png"
+
+        # Convert to Pillow Image
+        img_pil = Image.fromarray(np.asarray(img))
+
+        # Draw labels if enabled
+        if labels:
+            draw = ImageDraw.Draw(img_pil)
+            try:
+                font = ImageFont.truetype("DejaVuSans.ttf", 16)  # standard font
+            except:
+                font = ImageFont.load_default()
+
+            for node in self.nodes.values():
+                label = self.label_mapping.get(node.sem_label, "ID not found")
+                point = node.centroid
+
+                # Project 3D point -> 2D pixel coords
+                screen_pt = renderer.scene.camera.project(point, width, height)
+                if screen_pt is not None:
+                    x, y = int(screen_pt[0]), int(screen_pt[1])
+                    draw.text((x, y), label, fill=(0, 0, 0), font=font)
+
+        # Save with labels
+        img_pil.save(filename)
+
+        return filename
+
      
     def save_full_graph_to_json(self, file_path: str) -> None:
         """

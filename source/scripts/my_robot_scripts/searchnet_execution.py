@@ -249,6 +249,6 @@ def execute_search(OBJECT: str) -> bool:
      
 if __name__ == "__main__":
     # docker run --net=bridge --mac-address=02:42:ac:11:00:02 -p 5000:5000 --gpus all -it craiden/graspnet:v1.0 python3 app.py
-    # docker run -p 5004:5004 --gpus all -v /home/user/schmied1/Downloads/drawer-docker/yolodrawer/args.yaml:/home/yolodrawer/args.yaml -it craiden/yolodrawer:v1.0 python3 app.py
+    # docker run -p 5004:5004 --gpus all -it craiden/yolodrawer:v1.0 python3 app.py
     # ./run_docker_new.sh
     execute_search(OBJECT)

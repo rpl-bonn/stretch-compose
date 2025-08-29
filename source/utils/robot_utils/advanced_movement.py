@@ -203,7 +203,7 @@ def adapt_grasp(tf_node: FrameTransformer, grasp_pose: np.ndarray, min_height: f
     euler_angles = Rotation.from_matrix(rotation).as_euler('xyz', degrees=True)
     if 0 < euler_angles[2] < 180:  # if yaw angle is between 0 and 180 degrees, mirror it
         euler_angles[2] = -euler_angles[2]
-    
+    # TODO: check if roll is upside down, mirror it
     rotation = Rotation.from_euler('xyz', euler_angles, degrees=True).as_matrix()
     tf_in_base[:3, :3] = rotation.copy()
     new_grasp_pose = np.linalg.inv(tf) @ tf_in_base   
@@ -328,11 +328,7 @@ def find_new_grasp_dynamically(
     
     try:
         # Get grasp pose
-        start_time = time.time_ns()
         tf_matrices, widths, scores = gpd_predict_full_grasp(pcd_obj, pcd_env, config, vis_block=True)
-        end_time = time.time_ns()
-        minutes, seconds = convert_time(end_time - start_time)
-        print(f"\nGrasp prediction RUNTIME: {minutes}min {seconds}s\n")
         
         tf_matrices, widths, scores = filter_grasps(tf_node, tf_matrices, widths, scores)
         visualize_grasps(pcd_obj, pcd_env, tf_matrices, widths, scores, "filtered_grasps")
@@ -397,6 +393,7 @@ def move_in_front_of(
         look_ahead(pose_node)
         unstow_arm(pose_node, target_center, yaw=yaw, pitch=pitch, roll=roll, lift=lift)
     else:
+        time.sleep(2)
         move_head(head_node, target_center, tilt_bool=True)
         time.sleep(1)
     

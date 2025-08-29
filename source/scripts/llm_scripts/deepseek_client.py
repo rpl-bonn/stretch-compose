@@ -64,10 +64,10 @@ def ask_deepseek_for_locations(item: str, hint: str = "", no_proposals: int = 3)
     )
 
     print("Reasoning:\n", completion.choices[0].message.content.split("```json")[0])
-    print("Response:\n", completion.choices[0].message.content.split("</think>\n\n")[1])
+    #print("Response:\n", completion.choices[0].message.content.split("</think>\n\n")[1])
 
     # Save result json
-    result = completion.choices[0].message.content.split("```json")[1].split("```")[0]
+    result = completion.choices[0].message.content.split("```json")[0]
     json_data = json.loads(result)
     json_data["chain-of-thought"] = completion.choices[0].message.content.split("```json")[0]
     os.makedirs(os.path.join(config.get_subpath("scene_graph"), config["pre_scanned_graphs"]["high_res"], "locations"), exist_ok=True)

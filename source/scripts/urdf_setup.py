@@ -7,7 +7,7 @@ from utils.recursive_config import Config
 
 
 config = Config()
-URDF_DIR = config.get_config("stretch_description")
+URDF_DIR = config.get_subpath("stretch_description")
 
 
 def modify_urdf():
@@ -72,7 +72,7 @@ def modify_urdf():
     print(f"num joints: {len(modified_urdf.joints)}")
     
     # Save new modified urdf
-    iktuturdf_path = os.path.join(URDF_DIR, "modified_urdf", "sstretch.urdf")
+    iktuturdf_path = os.path.join(URDF_DIR, "modified_urdf", "stretch.urdf")
     modified_urdf.save(iktuturdf_path)
     
     # Show urdf tree

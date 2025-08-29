@@ -218,12 +218,13 @@ def main():
         scenegraph_end = time.time_ns()
         minutes, seconds = convert_time(scenegraph_end - scenegraph_start)
         print(f"\nSuccessfully created scene_graph (time: {minutes}min {seconds}s).\n")
+        #scene_graph.save_visualization(os.path.join(GRAPH_DIR, "visualization.png"), centroids=True, connections=True, labels=True, frame_center=True)
         scene_graph.visualize(labels=True, connections=True, centroids=True, frame_center=True)
     except Exception as e:
         print(f"Error: Failed to create scene graph. {e}")
     
     
 if __name__ == "__main__":
-    # docker run --gpus all -it -v /home:/home -w /home/user/schmied1/workspace/Test/source/Mask3D rupalsaxena/mask3d_docker:latest -c "python3 mask3d.py --seed 42 --workspace /home/user/schmied1/workspace/Test/data/ipad_scans/2025_02_20 --pcd && chmod -R 777 /home/user/schmied1/workspace/Test/data/ipad_scans/2025_02_20"
+    # docker run --gpus all -it -v /home:/home -w /home/stretch/workspace/Test/source/Mask3D rupalsaxena/mask3d_docker:latest -c "python3 mask3d.py --seed 42 --workspace /home/stretch/workspace/stretch-compose/data/ipad_scans/2025_08_21 --pcd && chmod -R 777 /home/stretch/workspace/stretch-compose/data/ipad_scans/2025_08_21"
     # docker run -p 5004:5004 --gpus all -it craiden/yolodrawer:v1.0 python3 app.py
     main()
