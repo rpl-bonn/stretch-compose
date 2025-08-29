@@ -33,7 +33,7 @@ RUN apt-get update && apt-get upgrade -y && \
 ENV SHELL /bin/bash
 
 # Install python dependencies
-RUN pip install open3d openai ikpy graphviz ultralytics apriltag git+https://github.com/openai/CLIP.git "numpy<1.25"
+RUN pip install open3d openai ikpy graphviz ultralytics apriltag git+https://github.com/openai/CLIP.git "numpy<1.25" transformers hydra-core
 
 # Source ROS environment automatically
 RUN echo "source /opt/ros/$ROS_DISTRO/setup.bash" >> /home/$USERNAME/.bashrc

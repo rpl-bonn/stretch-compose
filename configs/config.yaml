@@ -17,9 +17,9 @@ pre_scanned_graphs:
   base_fiducial_id: 101
   graph_frame_name_prefix: "filtered_fiducial_"
   floor: -0.1
-  low_res: "2025_02_20"
-  high_res: "2025_02_20"
-  masked: "2025_02_20"
+  low_res: "2025_08_21"
+  high_res: "2025_08_21"
+  masked: "2025_08_21"
 
 # paths are relative from project_root_directory
 subpaths:

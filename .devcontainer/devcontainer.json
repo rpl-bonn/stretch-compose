@@ -1,11 +1,11 @@
 {
     "name": "ROS Development Container",
     "privileged": true,
-    "remoteUser": "${localEnv:USER}",
+    "remoteUser": "stretch",
     "build": {
         "dockerfile": "Dockerfile",
         "args": {
-            "USERNAME": "${localEnv:USER}",
+            "USERNAME": "stretch",
             "DOCKER_REPO": "osrf/ros",
             "ROS_DISTRO": "humble",
             "IMAGE_SUFFIX": "-desktop-full"
@@ -28,7 +28,8 @@
     "containerEnv": {
         "DISPLAY": "unix:0",
         "ROS_LOCALHOST_ONLY": "0",
-        "ROS_DOMAIN_ID": "1"
+        "ROS_DOMAIN_ID": "1",
+        "PYTHONPATH": "${PYTHONPATH}:/home/ws:/home/ws/source"
     },
     "runArgs": [
         "--net=host",
@@ -38,7 +39,7 @@
     "mounts": [
         "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind,consistency=cached",
         "source=/dev/dri,target=/dev/dri,type=bind,consistency=cached",
-        "source=${localEnv:HOME}/.ssh,target=/home/${localEnv:USER}/.ssh,type=bind"
+        "source=/home/stretch/.ssh,target=/home/stretch/.ssh,type=bind"
     ],
     "initializeCommand": "sh ./.devcontainer/initialize.sh",
     "postCreateCommand": "sh ./.devcontainer/postCreate.sh"
