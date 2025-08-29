@@ -9,7 +9,7 @@ This file describes how to setup the repository as a [Dev Container](https://doc
 3. Open the project in VS Code & install the **Dev Containers** extension
 4. Press `F1` to open the **command palette** & execute the command `Dev Containers: Rebuild without Cache and Reopen in Container` (This takes a few minutes to build)
 5. Now the project **is running** inside the Dev Container
-6. Run `export PYTHONPATH=$PYTHONPATH:/home/ws` in the VS Code Terminal to prevent the *ModuleNotFoundError: No module named 'source'*
+6. *Note*: Run `export PYTHONPATH=$PYTHONPATH:/home/ws/source` in the VS Code Terminal if *ModuleNotFoundError: No module named '[utils|scripts|...]'* appears
 7. *Note*: Maybe not all necessary Python libraries are already installed yet
 
 

@@ -34,8 +34,7 @@ stretch-compose/
     │   │   ├── openai_client.py
     │   │   └── ...                         	# Other llm scripts
     │   ├── my_robot_scripts/			# Robot Pipeline Scripts
-    │   │   ├── graspnet_planning.py        
-    │   │   ├── graspnet_execution.py       
+    │   │   ├── pipeline_template.py             
     │   │   ├── searchnet_planning.py 
     │   │   ├── searchnet_execution.py
     │   │   └── ...                         	# Other pipeline scripts 

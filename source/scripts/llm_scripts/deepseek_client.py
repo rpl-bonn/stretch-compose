@@ -54,9 +54,8 @@ def ask_deepseek_for_locations(item: str, hint: str = "", no_proposals: int = 3)
                 ],
             },
         ],
-        response_format={
-            'type': 'json_object'
-        },
+        # if this is set, the CoT (<think>...</think>) is not given:
+        # response_format={'type': 'json_object'},
         temperature=0.6,
         top_p=0.7,
         max_tokens=4096,

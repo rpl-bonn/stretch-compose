@@ -224,6 +224,8 @@ def main():
     
     
 if __name__ == "__main__":
-    # docker run --gpus all -it -v /home:/home -w /home/user/schmied1/workspace/Test/source/Mask3D rupalsaxena/mask3d_docker:latest -c "python3 mask3d.py --seed 42 --workspace /home/user/schmied1/workspace/Test/data/ipad_scans/2025_02_20 --pcd && chmod -R 777 /home/user/schmied1/workspace/Test/data/ipad_scans/2025_02_20"
+    # To run Mask3D Docker container once:
+    # docker run --gpus all -it -v /home:/home -w /home/stretch/workspace/Test/source/Mask3D rupalsaxena/mask3d_docker:latest -c "python3 mask3d.py --seed 42 --workspace /home/stretch/workspace/stretch-compose/data/ipad_scans/2025_08_21 --pcd && chmod -R 777 /home/stretch/workspace/stretch-compose/data/ipad_scans/2025_08_21"
+    # To run YOLODrawer Docker container:
     # docker run -p 5004:5004 --gpus all -it craiden/yolodrawer:v1.0 python3 app.py
     main()

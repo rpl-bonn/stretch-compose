@@ -8,7 +8,7 @@ import pytz
 import struct
 import open3d as o3d
 import numpy as np
-from source.utils.recursive_config import Config
+from utils.recursive_config import Config
 
 config = Config()
 

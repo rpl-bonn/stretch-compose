@@ -149,7 +149,7 @@ def plan_poses(obj: str, vis_block: bool=False) -> tuple[Pose3D, Pose3D]:
     
     
 if __name__ == "__main__":
-    # DON'T FORGET: docker run --net=bridge --mac-address=02:42:ac:11:00:02 -p 5000:5000 --gpus all -it craiden/graspnet:v1.0 python3 app.py
+    # docker run --net=bridge --mac-address=02:42:ac:11:00:02 -p 5000:5000 --gpus all -it craiden/graspnet:v1.0 python3 app.py
     if OBJECT is None:
         obj = get_wanted_item_mask3d()
     else:

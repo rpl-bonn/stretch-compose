@@ -15,9 +15,16 @@ def show_point_cloud(path, name="Point Cloud") -> None:
     :param path: Path where the point cloud is located.
     :param name: Window name for Open3D.
     """
-    axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=1.0, origin=[0, 0, 0])
-    pcd = o3d.io.read_point_cloud(path)
-    o3d.visualization.draw_geometries([pcd, axis], window_name=name)
+    try:
+        axis = o3d.geometry.TriangleMesh.create_coordinate_frame(size=1.0, origin=[0, 0, 0])
+        pcd = o3d.io.read_point_cloud(path)
+        try:
+            o3d.visualization.draw_geometries([pcd, axis], window_name=name)
+        except Exception as e:
+            print(f"Warning: Could not visualize point cloud due to missing display capabilities: {e}")
+            print("Continuing without visualization...")
+    except Exception as e:
+        print(f"Error loading point cloud: {e}")
 
 
 def merge_clouds():
@@ -87,12 +94,13 @@ def show_object_and_grasps():
 
 
 def main() -> None:
+    # To run OpenMask3D Docker container:
     # docker run -p 5001:5001 --gpus all -it craiden/openmask:v1.0 python3 app.py
     merge_clouds()
     align_clouds()
     get_mask()
     show_clouds()
-    show_object_and_grasps()
+    #show_object_and_grasps()
 
 if __name__ == "__main__":
     main()
