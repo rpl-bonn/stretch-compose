@@ -39,6 +39,7 @@ setup(
             'move_to_position = stretch_package.stretch_movement.move_to_position:main',
             'move_to_pose = stretch_package.stretch_movement.move_to_pose:main',
             'frame_transformer = stretch_package.stretch_state.frame_transformer:main',
+            'localize_se3 = stretch_package.stretch_state.localize_se3:main',
         ],
     },
 )
