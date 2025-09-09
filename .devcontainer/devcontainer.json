@@ -26,20 +26,27 @@
         }
     },
     "containerEnv": {
-        "DISPLAY": "unix:0",
+        "DISPLAY": "${env:DISPLAY}",
         "ROS_LOCALHOST_ONLY": "0",
         "ROS_DOMAIN_ID": "1",
-        "PYTHONPATH": "${PYTHONPATH}:/home/ws:/home/ws/source"
+        "PYTHONPATH": "${PYTHONPATH}:/home/ws:/home/ws/source",
+        "QT_X11_NO_MITSHM": "1",
+        "LIBGL_ALWAYS_INDIRECT": "0",
+        "NVIDIA_DRIVER_CAPABILITIES": "all",
+        "NVIDIA_VISIBLE_DEVICES": "all"
     },
     "runArgs": [
         "--net=host",
         "-e", "DISPLAY=${env:DISPLAY}",
-        "--gpus", "all"
+        "--gpus", "all",
+        "-e", "NVIDIA_DRIVER_CAPABILITIES=all",
+        "-e", "NVIDIA_VISIBLE_DEVICES=all"
     ],
     "mounts": [
         "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind,consistency=cached",
         "source=/dev/dri,target=/dev/dri,type=bind,consistency=cached",
-        "source=/home/stretch/.ssh,target=/home/stretch/.ssh,type=bind"
+        "source=/home/stretch/.ssh,target=/home/stretch/.ssh,type=bind",
+        "source=${env:HOME}/.Xauthority,target=/home/stretch/.Xauthority,type=bind"
     ],
     "initializeCommand": "sh ./.devcontainer/initialize.sh",
     "postCreateCommand": "sh ./.devcontainer/postCreate.sh"
