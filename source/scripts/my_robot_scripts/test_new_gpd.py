@@ -16,10 +16,10 @@ import open3d as o3d
 
 from ultralytics import YOLO, YOLOE
 
-CAM_COLOR = '/gripper_camera/color/image_rect_raw'
-CAM_DEPTH = '/gripper_camera/aligned_depth_to_color/image_raw'
-CAM_INFO  = '/gripper_camera/color/camera_info'
-CAM_FRAME = 'gripper_camera_color_optical_frame'
+CAM_COLOR = '/camera/color/image_rect_raw'
+CAM_DEPTH = '/camera/aligned_depth_to_color/image_raw'
+CAM_INFO  = '/camera/color/camera_info'
+CAM_FRAME = '/camera_color_optical_frame'
 BASE_FRAME = 'base_link'
 
 PROMPT = ["blue bottle", "water bottle", "bottle"]  # adjust if needed

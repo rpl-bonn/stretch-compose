@@ -61,9 +61,13 @@ def get_mask_clip_features() -> None:
     if response.status_code == 200:  # fail
         contents = _get_content(response, SAVE_PATH)
     else:
-        message = json.loads(response.content)
-        print(f"{message['error']}", f"Status code: {response.status_code}", sep="\n")
-        return
+        try:
+            message = json.loads(response.content)
+            print(f"{message['error']}", f"Status code: {response.status_code}", sep="\n")
+            return
+        except json.JSONDecodeError:
+            print(f"Failed to decode JSON response: {response.content}")
+            return
 
     features = contents["clip_features"]
     masks = contents["scene_MASKS"]
@@ -89,6 +93,7 @@ def get_mask_clip_features() -> None:
 
 def get_mask_points(item: str, config, idx: int = 0, vis_block: bool = False):
     pcd_name = config["pre_scanned_graphs"]["high_res"]
+    print(f"pcd path name {pcd_name}")
     base_path = config.get_subpath("openmask_features")
     feat_path = os.path.join(base_path, pcd_name, "clip_features_comp.npy")
     mask_path = os.path.join(base_path, pcd_name, "scene_MASKS_comp.npy")
@@ -104,6 +109,7 @@ def get_mask_points(item: str, config, idx: int = 0, vis_block: bool = False):
     # features = features[mask_idx]
 
     text = clip.tokenize([item]).to("cpu")
+    #print(f"Searching for '{item}' in {features.shape[0]} features...")
 
     # Compute the CLIP feature vector for the specified word
     with torch.no_grad():
@@ -112,6 +118,7 @@ def get_mask_points(item: str, config, idx: int = 0, vis_block: bool = False):
     cos_sim = torch.nn.functional.cosine_similarity(torch.Tensor(features), text_features, dim=1)
     values, indices = torch.topk(cos_sim, idx + 1)
     most_sim_feat_idx = indices[-1].item()
+    #if values[-1].item() > 0.2:
     print(f"{item}: {most_sim_feat_idx=}", f"value={values[-1].item()}")
     # idx = 1
     mask = masks[:, most_sim_feat_idx].astype(bool)
@@ -135,18 +142,44 @@ def get_mask_points(item: str, config, idx: int = 0, vis_block: bool = False):
 
     if vis_block:
         pcd_in.paint_uniform_color([1, 0, 1])
-        o3d.visualization.draw_geometries([pcd_in, pcd_out], window_name=item)
+        # Visualize with origin coordinate system
+        origin = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
+        o3d.visualization.draw_geometries([pcd_in, pcd_out, origin], window_name=item)
 
-    return pcd_in, pcd_out
+    return pcd_in, pcd_out, values[-1].item()
 
+def get_text_similarity(object_label: str, furniture_label: str):
+    # Tokenize both labels
+    labels = [object_label.lower(), furniture_label.lower()]
+    text = clip.tokenize(labels).to("cpu")
+
+    # Encode text features with CLIP
+    with torch.no_grad():
+        text_features = MODEL.encode_text(text)
+
+    # Compute cosine similarity between the two label features
+    similarity = torch.nn.functional.cosine_similarity(
+        text_features[0].unsqueeze(0), text_features[1].unsqueeze(0), dim=1
+    )
+
+    return similarity.item()
 
 ########################################################################################
 # TESTING
 ########################################################################################
 
 
+
 def _test_mask_points():
-    item = "cabinet, shelf"
+    vocab_file = "/home/ws/data/open_vocab.json" 
+    with open(vocab_file, "r") as f:
+        vocab = json.load(f)                   # list of strings
+        
+    # for item in vocab:
+    #     print(f"\nItem: {item}")
+    #     config = Config()
+    #     get_mask_points(item, config, idx=0, vis_block=True)
+    item = "blue water bottle"
     config = Config()
     for i in range(15):
         print(i, end=", ")

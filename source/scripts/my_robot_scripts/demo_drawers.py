@@ -90,6 +90,7 @@ def execute_search(OBJECT: str) -> bool:
     transform_node = FrameTransformer(transform_manager.tf_buffer)
     
     try: 
+        print(f"Searching for {OBJECT} in the environment...")
         with open(os.path.join(GRAPH_DIR, "graph.json"), "r") as file:
             graph_data = json.load(file)
         with open(os.path.join(GRAPH_DIR, "scene.json"), "r") as file:
@@ -113,6 +114,7 @@ def execute_search(OBJECT: str) -> bool:
         fitting_drawers = searchnet_planning.filter_drawers(in_scene_graph, graph_data, connections, checked_furniture_ids, OBJECT)
         
         ## Check each drawer for the object    
+        print("-----------------############################-----------------")
         for drawer_id in fitting_drawers:
             with open(os.path.join(GRAPH_DIR, "drawers", f"{drawer_id}.json"), "r") as file:
                 drawer_data = json.load(file)
@@ -123,7 +125,8 @@ def execute_search(OBJECT: str) -> bool:
             
             # Move robot in front of the drawer
             body_pose, front_normal = searchnet_planning.plan_drawer_search(furniture_name, furniture_center, drawer_center, 0.8)
-            move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, drawer_center, 0.0, 0.0, 0.0, 0.09, stow=True, grasp=True)           
+            
+            # move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, drawer_center, 0.0, 0.0, 0.0, 0.09, stow=True, grasp=True)           
             
             # Take image of drawer to detect handle
             rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, "/gripper_camera/color/image_rect_raw", gripper=True)
@@ -131,6 +134,13 @@ def execute_search(OBJECT: str) -> bool:
             # Skip if no handle detected
             try:
                 handle_pose, drawer_type, hinge_pose = detect_handle(transform_node, depth_img, rgb_img)
+                print("----------------------------------------------------------")
+                print(f"HANDLE POSE: {handle_pose}")
+                print("----------------------------------------------------------")
+                print(f"DRAWER TYPE: {drawer_type}")
+                print("----------------------------------------------------------")
+                print(f"HINGE POSE: {hinge_pose}")
+                print("----------------------------------------------------------")
             except Exception as e:
                 continue
             print(f"OPENING DIRECTION: {drawer_type}")

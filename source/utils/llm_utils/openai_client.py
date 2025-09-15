@@ -8,6 +8,8 @@ from utils.recursive_config import Config
 import time
 config = Config()
 
+oai_client = OpenAI(api_key=set_key(config, "openai"))
+
 def encode_image(img_path):
     with open(img_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
@@ -55,7 +57,7 @@ def extend_json(client: OpenAI, json_path: str, write_path: str) -> None:
     print(response.choices[0].message.content)
     save_json(write_path, response.choices[0].message.content)
 
-def ask_for_shelf_with_room_json(client: OpenAI, json_path: str, object_name: str, model_name: str="gpt-4o-mini") -> None:
+def ask_for_shelf_with_room_json(client: OpenAI, json_path: str, object_name: str, object_not_found_location: str="", model_name: str="gpt-4o-mini") -> None:
     json_string = load_json(json_path)
     # system_msg = "The user will give you 2 things. \
     #               1. A json containing a list of furniture (label, center position, dimensions) in the environment, clustered into rooms by an llm. \
@@ -68,7 +70,7 @@ def ask_for_shelf_with_room_json(client: OpenAI, json_path: str, object_name: st
     "1) a JSON with furniture (id, label, centroid, dimensions, room), "
     "2) an object name. "
     "Task: predict the 3 most likely furniture for the object. "
-    "For each prediction, include id, label, room, probability, and a short spatial only relation like on top of, inside. "
+    "For each prediction, include id as a str, label, room, probability, and a short spatial only relation like on top of, inside. "
     "Return ONLY a valid JSON in this format:\n"
     "{\n"
     '  "<object_name>": [\n'
@@ -77,7 +79,10 @@ def ask_for_shelf_with_room_json(client: OpenAI, json_path: str, object_name: st
     "  ]\n"
     "}"
     )              
-    user_msg = object_name
+    if object_not_found_location is None or object_not_found_location == "":
+        user_msg = object_name
+    else:
+        user_msg = f" Find {object_name}. The object was not found at this location: {object_not_found_location}. So exclude {object_not_found_location} from your predictions."
     start_time = time.time()
     response = client.chat.completions.create(
         model=model_name,

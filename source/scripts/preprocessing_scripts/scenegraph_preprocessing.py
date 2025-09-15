@@ -174,8 +174,8 @@ def create_scene_graph(scan_path: str, tform_path: str, data_path: str) -> Scene
     Returns:
         SceneGraph: SceneGraph object containing the scene graph data.
     """
-    remove = ["door", "window", "doorframe", "radiator", "soap dispenser", "board", "object", "book", "fan"]
-    immovable = ["shelf", "bookshelf", "cabinet", "table", "chair", "couch", "armchair", "coffee table", "trash can", "kitchen cabinet"]
+    remove = ["door", "window", "doorframe", "radiator", "soap dispenser", "board", "object", "book", "fan", "picture", "backpack"]
+    immovable = ["shelf", "bookshelf", "cabinet", "table", "chair", "couch", "armchair", "coffee table", "trash can", "kitchen cabinet", "shelf near door", "end table", "kitchen", "kitchen counter", "ceramic cooktop", "stove", "ceramic hob"]
     
     # Get labels & preprocess scan
     label_map = pd.read_csv(data_path + '/mask3d_label_mapping.csv', usecols=['id', 'category'])
@@ -184,10 +184,11 @@ def create_scene_graph(scan_path: str, tform_path: str, data_path: str) -> Scene
     T_ipad = np.load(scan_path + "/aruco_pose.npy")
     
     # Create scene graph
-    scene_graph = SceneGraph(label_mapping=mask3d_label_mapping, min_confidence=0.5, immovable=immovable, pose=T_ipad)
+    scene_graph = SceneGraph(label_mapping=mask3d_label_mapping, min_confidence=0.05, immovable=immovable, pose=T_ipad)
     scene_graph.build(scan_path, drawers=DRAWERS)
     scene_graph.remove_categories(remove)
-    
+    scene_graph.replace_category("cabinet", "kitchen counter")
+
     # Transform to Stretch coordinate system
     icp_tform = parse_txt(os.path.join(tform_path, "icp_tform_ground.txt")) # 4x4 transformation matrix of the aruco marker in Stretch coordinate system
     scene_graph.change_coordinate_system(icp_tform)
@@ -225,6 +226,6 @@ def main():
     
     
 if __name__ == "__main__":
-    # docker run --gpus all -it -v /home:/home -w /home/stretch/workspace/Test/source/Mask3D rupalsaxena/mask3d_docker:latest -c "python3 mask3d.py --seed 42 --workspace /home/stretch/workspace/stretch-compose/data/ipad_scans/2025_08_21 --pcd && chmod -R 777 /home/stretch/workspace/stretch-compose/data/ipad_scans/2025_08_21"
+    # docker run --gpus all -it -v /home:/home -w /home/stretch/workspace/Test/source/Mask3D rupalsaxena/mask3d_docker:latest -c "python3 mask3d.py --seed 42 --workspace /home/stretch/workspace/stretch-compose/data/ipad_scans/2025_09_12 --pcd && chmod -R 777 /home/stretch/workspace/stretch-compose/data/ipad_scans/2025_09_12"
     # docker run -p 5004:5004 --gpus all -it craiden/yolodrawer:v1.0 python3 app.py
     main()

@@ -56,8 +56,11 @@ def get_distance_to_shelf(obj: str, index: int|None=None) -> tuple[float, np.nda
 
     # Get furniture name, centroid and dimensions from scene json
     scene_path = os.path.join(config.get_subpath("scene_graph"), config["pre_scanned_graphs"]["high_res"], "scene.json")
+    print(scene_path)
     with open(scene_path, "r") as file:
         scene_data = json.load(file)
+    print(scene_data)
+    print(f"Furniture ID: {furniture_id}")
     furniture_name = scene_data["furniture"][furniture_id]["label"]
     furniture_centroid = scene_data["furniture"][furniture_id]["centroid"]
     furniture_dimensions = scene_data["furniture"][furniture_id]["dimensions"]
@@ -218,12 +221,12 @@ def plan_furniture_search(obj: str, index: int|None=None) -> tuple[Pose3D, str, 
     # Get necessary distance to shelf
     radius, center, furniture_name, furniture_id = get_distance_to_shelf(obj, index)
     # Get all cabinets/shelfs in the environment
-    for idx in range(0, 10):
+    for idx in range(0, 20):
         if furniture_name == "cabinet":
             furnitures = "kitchen cabinet"
         else:
             furnitures = furniture_name
-        furniture_pcd, env_pcd = get_mask_points(furnitures, Config(), idx=idx, vis_block=VIS_BLOCK)
+        furniture_pcd, env_pcd, mask_sim = get_mask_points(furnitures, Config(), idx=idx, vis_block=VIS_BLOCK)
         furniture_center = np.mean(np.asarray(furniture_pcd.points), axis=0)
         # Find correct furniture
         if (np.allclose(furniture_center, center, atol=0.1)):
@@ -236,8 +239,8 @@ def plan_furniture_search(obj: str, index: int|None=None) -> tuple[Pose3D, str, 
                 furniture_center,
                 furniture_normal=front_normal,
                 min_target_distance=radius,
-                max_target_distance=radius+0.2,
-                min_obstacle_distance=0.4,
+                max_target_distance=radius+0.1,
+                min_obstacle_distance=0.1,
                 n=5,
                 vis_block=VIS_BLOCK,
             )

@@ -22,6 +22,8 @@ from stretch_package.stretch_movement.move_to_pose import JointPoseController
 from stretch_package.stretch_movement.move_to_position import JointPositionController
 from stretch_package.stretch_movement.stow_arm import StowArmController
 from stretch_package.stretch_state.frame_transformer import FrameTransformer
+#from stretch_package.stretch_state.localize_se3 import LocalizeSE3
+#from stretch_package.gpd_ros2_interface.constrained_grasp_iface import ConstrainedGraspInterface
 
 # Config and Paths
 config = Config()
@@ -329,6 +331,7 @@ def find_new_grasp_dynamically(
     try:
         # Get grasp pose
         tf_matrices, widths, scores = gpd_predict_full_grasp(pcd_obj, pcd_env, config, vis_block=True)
+        
         
         tf_matrices, widths, scores = filter_grasps(tf_node, tf_matrices, widths, scores)
         visualize_grasps(pcd_obj, pcd_env, tf_matrices, widths, scores, "filtered_grasps")

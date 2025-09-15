@@ -25,12 +25,16 @@ from utils.robot_utils.advanced_movement import *
 from utils.robot_utils.basic_movement import *
 from utils.robot_utils.basic_perception import *
 from utils.zero_shot_object_detection import yolo_detect_object
+from utils.openmask_interface import get_mask_points
+from utils.openmask_interface import get_text_similarity
+from utils.open_vocab_graph_search import OpenVocabSearch
+from utils.llm_utils import openai_client
 
 # Adaptable
 VIS_BLOCK = False
 SAVE_BLOCK = True
 NO_PROPOSALS = 3
-OBJECT = "bottle"
+OBJECT = "blue bottle"
 
 # Config and Paths
 config = Config()
@@ -42,7 +46,10 @@ SCAN_DIR = os.path.join(scan_path, ending)
 GRAPH_DIR = os.path.join(graph_path, ending)
 PCD_DIR = os.path.join(pcd_path, ending)
 IMG_DIR = config.get_subpath("images")
-
+object_location_json_path = os.path.join(config.get_subpath("scene_graph"), ending, "locations")
+room_json_path = os.path.join(config.get_subpath("scene_graph"), ending, "rooms.json")
+likely_furniture_label = ""
+location_proposals_already_exist = False
 
 class TransformManager:
     def __init__(self, node: Node):
@@ -78,6 +85,8 @@ def execute_search(OBJECT: str) -> bool:
     success = False
     detected = False
     in_scene_graph = False
+    candidate_found_with_high_probability = False
+    location_proposals_already_exist = False
     checked_furniture_ids = []
     pcd = o3d.io.read_point_cloud(str(os.path.join(PCD_DIR, "scene.ply")))
     
@@ -94,6 +103,8 @@ def execute_search(OBJECT: str) -> bool:
     try: 
         with open(os.path.join(GRAPH_DIR, "graph.json"), "r") as file:
             graph_data = json.load(file)
+            #scene_data = json.load(GRAPH_DIR + "/scene.json")
+            #furniture_data = scene_data.get("furniture", {})
         
         # A: Object is in the scene graph
         if OBJECT in graph_data["node_labels"]:
@@ -106,10 +117,64 @@ def execute_search(OBJECT: str) -> bool:
             get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
             get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
             detected, detection_dict = yolo_detect_object(OBJECT, "head", save_block=SAVE_BLOCK)
+            
+        else:     
+            # Check if location proposals already exist for the object
+            object_filename = f"{OBJECT.replace(' ', '_')}.json"
+            object_location_file = os.path.join(object_location_json_path, object_filename)
+            if os.path.exists(object_location_file):
+                try:
+                    with open(object_location_file, "r") as loc_file:
+                        loc_data = json.load(loc_file)
+                        if isinstance(loc_data, dict) and "locations" in loc_data:
+                            if isinstance(loc_data["locations"], list) and len(loc_data["locations"]) == 3:
+                                location_proposals_already_exist = True
+                except Exception as e:
+                    print(f"Error reading location proposals file: {e}")
+            if location_proposals_already_exist:
+                print(f"Location proposals for {OBJECT} already exist. Skipping LLM location proposal step.")
+            
+            else:
+                candidate_found_with_high_probability = False
+                print(f"{OBJECT} is NOT in the current scene graph. Switching to open vocabulary grasp search with clip and openmask3d")
+                # ovs = OpenVocabSearch()
+                print("Skipping open vocabulary search for now.")
+                
+                # candidate_found, likely_furniture_id, likely_furniture_label, mask_sim, text_sim = ovs.search(OBJECT, no_proposals=NO_PROPOSALS)
+                
+                # if candidate_found:
+                #     probability = ovs.compute_probability(mask_sim, text_sim, 0.4)
+                    
+                # if candidate_found and probability > 0.4:
+                #     print(f"Searching for {OBJECT} in/on {likely_furniture_label} (id: {likely_furniture_id}) with combined probability {probability:.3f}.")
+                #     result = ovs.result_to_json(OBJECT, likely_furniture_id, likely_furniture_label, probability, "unknown", object_location_json_path)
+                #     target_pos, furniture, front_normal, body_pose, furniture_id  = searchnet_planning.plan_furniture_search(OBJECT, 0)
+                #     checked_furniture_ids.append(furniture_id)
+                #     print(f"{OBJECT} is in the scene graph. Searching for it in/on {furniture} at {target_pos}")
+                #     candidate_found_with_high_probability = True
+
+                #     move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
+                #     get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
+                #     get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
+                #     detected, detection_dict = yolo_detect_object(OBJECT, "head", save_block=SAVE_BLOCK)
+                
+               
         
         # B: Object is not in the scene graph    
-        if not detected:           
+        if detected == False and location_proposals_already_exist == False:          
             # Check for object at the different locations proposed by DeepSeek
+            print(f"No suitable furniture found for {OBJECT} with high enough probability. Asking openai for likely locations.")
+            oai = openai_client.oai_client
+            result = openai_client.ask_for_shelf_with_room_json(oai, room_json_path, OBJECT, "end table near door", "gpt-4o-mini")
+
+            filename = f"{OBJECT.replace(' ', '_')}.json"
+            object_location_json_path_llm_filename = os.path.join(object_location_json_path, filename)
+            print(f"Saving object location prediction to {object_location_json_path_llm_filename}")
+            with open(object_location_json_path_llm_filename, 'w') as f:
+                json.dump(result, f, indent=4)
+            location_proposals_already_exist = True
+            
+        if (not candidate_found_with_high_probability or not detected) and location_proposals_already_exist:
             for i in range(NO_PROPOSALS):
                 target_pos, furniture, front_normal, body_pose, furniture_id  = searchnet_planning.plan_furniture_search(OBJECT, i)
                 # Skip if already checked
@@ -124,7 +189,10 @@ def execute_search(OBJECT: str) -> bool:
                 get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
                 detected, detection_dict = yolo_detect_object(OBJECT, "head", save_block=SAVE_BLOCK)
                 if detected:
+                    print(f"Found {OBJECT} in/on {furniture}: {detection_dict}")
                     break
+                else:
+                    print(f"Did not find {OBJECT} in/on {furniture}.")
         
         # C: Graps object in open space
         if detected:

@@ -14,7 +14,7 @@ from utils.docker_communication import save_files, send_request
 from utils.files import prep_tmp_path
 from utils.object_detetion import BBox, Detection, Match
 from utils.recursive_config import Config
-from utils.vis import draw_boxes, generate_distinct_colors
+from utils.vis import draw_boxes, generate_distinct_colors, draw_drawer_boxes
 
 COLORS = {
     "door": (0.651, 0.243, 0.957),
@@ -79,6 +79,90 @@ def predict_yolodrawer(image: np.ndarray, config: Config, logger: Optional[Logge
         plt.imsave(vis_path, vis_image)
     return detections
 
+def predict_door_yolodrawer(image: np.ndarray, config: Config, logger: Optional[Logger] = None, timeout: int = 90, input_format: str = "rgb", vis_block: bool = False) -> list[Detection] | None:
+    assert image.shape[-1] == 3
+    if input_format == "bgr":
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+    address_details = config["servers"]["yolodrawer"]
+    print(f"CHECKING ADDRESS DETAILS: {address_details}")
+    address = f"http://{address_details['ip']}:{address_details['port']}/{address_details['route']}"
+    print(f"CHECKING ADDRESS DETAILS: {address}")
+    tmp_path = prep_tmp_path(config)
+
+    save_data = [("image.npy", np.save, image)]
+    image_path, *_ = save_files(save_data, tmp_path)
+
+    paths_dict = {"image": image_path}
+    if logger:
+        logger.info(f"Sending request to {address}!")
+    contents = send_request(address, paths_dict, {}, timeout, tmp_path)
+    if logger:
+        logger.info("Received response!")
+
+    # no detections
+    if len(contents) == 0:
+        if vis_block:
+            draw_boxes(image, [])
+        return []
+
+    classes = contents["classes"]
+    confidences = contents["confidences"]
+    bboxes = contents["bboxes"]
+
+    detections = []
+    for cls, conf, bbox in zip(classes, confidences, bboxes):
+        name = CATEGORIES[str(int(cls))]
+        det = Detection(name, conf, BBox(*bbox))
+        print(f'name: {name}, conf: {conf}, bbox: {bbox}')
+        detections.append(det)
+
+    if vis_block:
+        print('########################################')
+        IMG_DIR = config.get_subpath("images")
+        vis_path = os.path.join(IMG_DIR, "gripper_drawers.png")
+        draw_drawer_boxes(image, detections)
+    else:
+        print('?????????????????????????????????????????')
+        vis_image = image.copy()
+        names = sorted(list(set([det.name for det in detections])))
+        names_dict = {name: i for i, name in enumerate(names)}
+        colors = generate_distinct_colors(len(names_dict))
+        # for name, conf, (xmin, ymin, xmax, ymax) in detections:
+        #     color = colors[names_dict[name]]
+        #     xmin, ymin, xmax, ymax = map(int, [xmin, ymin, xmax, ymax])
+        #     cv2.rectangle(vis_image, (xmin, ymin), (xmax, ymax), color, thickness=2)
+        #     label = f"{name}: {conf:.2f}"
+        # cv2.putText(vis_image, label, (xmin, max(0, ymin - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        
+        for idx, det in enumerate(detections, start=1):
+            name = det.name
+            conf = getattr(det, "conf", None)  # in case confidence is missing
+            xmin, ymin, xmax, ymax = map(int, det.bbox)  # assuming BBox is iterable
+
+            # print bbox info to console
+            if conf is not None:
+                print(f"[ID {idx}] {name} | conf={conf:.2f} | bbox=({xmin}, {ymin}, {xmax}, {ymax})")
+            else:
+                print(f"[ID {idx}] {name} | bbox=({xmin}, {ymin}, {xmax}, {ymax})")
+
+            # draw bounding box
+            color = colors[names_dict[name]]
+            cv2.rectangle(vis_image, (xmin, ymin), (xmax, ymax), color, thickness=2)
+
+            # add label with ID
+            label = f"ID{idx}:{name}" if conf is None else f"ID{idx}:{name} {conf:.2f}"
+            cv2.putText(vis_image, label, (xmin, max(0, ymin - 10)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+        
+        IMG_DIR = config.get_subpath("images")
+        vis_path = os.path.join(IMG_DIR, "gripper_abc.png")
+        cv2.imwrite(vis_path, vis_image)
+        print(f"Detections saved to {vis_path}")
+        print('?????????????????????????????????????????')
+
+        # plt.imsave(vis_path, vis_image)
+    return detections
 
 def predict_darknet(image: np.ndarray, config: Config, logger: Optional[Logger] = None, timeout: int = 90, input_format: str = "rgb", vis_block: bool = False) -> list[Detection] | None:
     assert image.shape[-1] == 3

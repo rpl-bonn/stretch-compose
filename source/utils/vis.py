@@ -110,3 +110,18 @@ def draw_boxes(image: np.ndarray, detections: list[Detection]) -> None:
     cv2.imshow("Detections", vis_image)
     cv2.waitKey(0)
     cv2.destroyAllWindows() 
+
+
+def draw_drawer_boxes(image: np.ndarray, detections: list[Detection],save_path: str = "./images/detections.png") -> None:
+    vis_image = image.copy()
+    names = sorted(list(set([det.name for det in detections])))
+    names_dict = {name: i for i, name in enumerate(names)}
+    colors = generate_distinct_colors(len(names_dict))
+    for name, conf, (xmin, ymin, xmax, ymax) in detections:
+        color = colors[names_dict[name]]
+        xmin, ymin, xmax, ymax = map(int, [xmin, ymin, xmax, ymax])
+        cv2.rectangle(vis_image, (xmin, ymin), (xmax, ymax), color, thickness=2)
+        label = f"{name}: {conf:.2f}"
+        cv2.putText(vis_image, label, (xmin, max(0, ymin - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+    cv2.imwrite(save_path, vis_image)
+    print(f"Detections saved to {save_path}")

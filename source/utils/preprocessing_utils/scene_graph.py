@@ -346,6 +346,27 @@ class SceneGraph:
             self.remove_node(index)
         self.labels.pop(label_to_remove, None)
         
+    def replace_category(self, old_category: str, new_category: str) -> None:
+        """
+        Replaces all nodes of a specified old category with a new category in the scene graph.
+
+        This method updates the semantic labels of nodes from the old category to the new category 
+        based on the label mapping. The connections and other attributes of the nodes remain unchanged.
+
+        :param old_category: The current category of nodes to be replaced.
+        :param new_category: The new category to assign to the nodes.
+        :return: None. All nodes of the old category are updated to the new category in place.
+        """
+        old_label = next((label for label, cat in self.label_mapping.items() if cat == old_category), None)
+        new_label = next((label for label, cat in self.label_mapping.items() if cat == new_category), None)
+        if old_label is None or new_label is None:
+            print(f"Category '{old_category}' or '{new_category}' not found in label mapping.")
+            return
+        for index in self.labels.get(old_label, []):
+            self.nodes[index].sem_label = new_label
+            self.labels.setdefault(new_label, []).append(index)
+        self.labels.pop(old_label, None)
+        
     def remove_categories(self, categories: list) -> None:
         """
         Removes all nodes belonging to a list of specified categories from the scene graph.

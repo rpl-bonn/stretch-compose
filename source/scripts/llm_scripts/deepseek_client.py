@@ -5,7 +5,7 @@ from utils.recursive_config import Config
 import json
 import os
 
-NO_ROOMS = 2
+NO_ROOMS = 3
 
 config = Config()
 client = OpenAI(
@@ -23,7 +23,7 @@ def ask_deepseek_for_locations(item: str, hint: str = "", no_proposals: int = 3)
     system_msg = f"The user will give you two things. \
                    A json containing furniture in the environment with its label, centroid, and bounding box dimensions.\
                    An item he/she wants to search for in the environment.\
-                1. Cluster the furniture into 2 clusters using k-means on the x-y-center-coordinates and the labels. Give each cluster a room name. \
+                1. Cluster the furniture into {NO_ROOMS} clusters using k-means on the x-y-center-coordinates and the labels. Give each cluster a room name. \
                 2. Name the {no_proposals} most likely places (furniture name and relation to furniture) with descending likelihood order, where the item can be found. Also consider the room. \
                 3. Return the result as a json in the following format: \
                     {{\"item\": \"item_name\", \"locations\":[{{\"furniture_id\", \"furniture_name\", \"relation\", \"room\"}}]}}"
@@ -63,8 +63,8 @@ def ask_deepseek_for_locations(item: str, hint: str = "", no_proposals: int = 3)
         stream=False
     )
 
-    print("Reasoning:\n", completion.choices[0].message.content.split("```json")[0])
-    #print("Response:\n", completion.choices[0].message.content.split("</think>\n\n")[1])
+    #print("Reasoning:\n", completion.choices[0].message.content.split("```json")[0])
+    print("Response:\n", completion.choices[0].message.content.split("</think>\n\n")[1])
 
     # Save result json
     result = completion.choices[0].message.content.split("```json")[0]
@@ -145,8 +145,8 @@ def ask_deepseek_for_object(query: str):
 
 def main(config: Config):
     q = "I am hungry."
-    ask_deepseek_for_object(q)
-    #ask_deepseek_for_locations("bowl")
+    #ask_deepseek_for_object(q)
+    ask_deepseek_for_locations("bowl")
 
 
 if __name__ == "__main__":

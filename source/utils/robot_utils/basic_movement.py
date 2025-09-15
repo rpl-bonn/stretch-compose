@@ -224,3 +224,69 @@ def look_ahead(node: JointPoseController) -> None:
     ahead_pos = {'joint_head_pan': -np.pi/2, 'joint_head_tilt': 0.0}
     node.send_joint_pose(ahead_pos)
     spin_until_complete(node)
+
+
+def move_body_test(node: BaseController, pose: Pose2D) -> bool:
+    """
+    Move the robot to a specified position and orientation in the world frame.
+    
+    Args:
+        node (BaseController): ROS2 node to control the robot's base
+        pose (Pose2D): Target position and orientation to go to
+    
+    Returns:
+        bool: Whether the movement was successful
+    """
+    goal_pos = np.array([pose[0], pose[1]])
+    node.send_goal(round(float(pose[0]), 3),round(float(pose[1]), 3),round(float(pose[2]), 3), round(float(pose[3]), 3), round(float(pose[4]), 3))
+    spin_until_complete(node)
+
+    odom = get_odom()
+    current_pos = np.array([odom.pose.pose.position.x, odom.pose.pose.position.y])   
+
+    if np.allclose(current_pos, goal_pos, atol=POS_TOL):
+        print(f"Reached goal position: {goal_pos}.")
+        return True
+
+    print("Failed to reach goal position.")
+    return False
+
+
+def yaw_from_quaternion(qx, qy, qz, qw):
+    """Convert quaternion to yaw (radians)."""
+    return np.arctan2(
+        2.0 * (qw * qz + qx * qy),
+        1.0 - 2.0 * (qy * qy + qz * qz)
+    )
+
+def turn_body_test(node: JointPoseController, pose: list, grasp: bool=True, full_rotation: bool=True) -> None:
+    """
+    Turn the robot to a specified orientation.
+    
+    Args:
+        node (JointPoseController): ROS2 node to control the robot's base
+        pose (list): [x, y, qx, qy, qz, qw]
+        grasp (bool): If True, add pi/2 extra rotation
+        full_rotation (bool): If True, rotate fully to the given yaw (no shortest path)
+    """
+    odom = get_odom()
+    cq = odom.pose.pose.orientation
+
+    current_yaw = yaw_from_quaternion(cq.x, cq.y, cq.z, cq.w)
+
+    goal_qx, goal_qy, goal_qz, goal_qw = pose[2], pose[3], pose[4], pose[5]
+    goal_yaw = yaw_from_quaternion(goal_qx, goal_qy, goal_qz, goal_qw)
+
+    # compute yaw difference
+    turn_dir = goal_yaw - current_yaw
+    # if grasp:
+    #     turn_dir += np.pi / 2.0
+
+    if not full_rotation:
+        # normalize to shortest path
+        turn_dir = (turn_dir + np.pi) % (2*np.pi) - np.pi
+
+    turn_value = {'rotate_mobile_base': turn_dir}
+    print(f"Turning by {np.degrees(turn_dir):.2f} degrees")
+    node.send_joint_pose(turn_value)
+    spin_until_complete(node)

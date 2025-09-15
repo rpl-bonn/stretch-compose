@@ -21,12 +21,14 @@ from ultralytics import YOLOWorld
 from stretch_package.stretch_state.frame_transformer import FrameTransformer
 from utils.coordinates import Pose3D
 from utils.drawer_detection import predict_yolodrawer as drawer_predict
+from utils.drawer_detection import predict_door_yolodrawer as door_predict
 from utils.object_detetion import BBox, Detection, Match
 from utils.recursive_config import Config
 from utils.robot_utils.basic_movement import spin_until_complete
 from utils.robot_utils.basic_perception import intrinsics_from_camera
 from utils.time import convert_time
 from utils.vis import normalize_image, draw_boxes
+import rclpy
 
 sys.path.append(os.path.abspath("/home/ws/source/sam2"))
 from sam2.build_sam import build_sam2 # type: ignore
@@ -266,7 +268,8 @@ def yolo_detect_object(obj: str, camera: str, conf: float=0.2, save_block: bool 
                             'confidence': confidence,
                             'box': (x1, y1, x2, y2)}
         print(f"Detection found: {detection_dict}")
-                            
+    
+    print(f"YOLO detected {obj}: {detected}")                       
     return detected, detection_dict
 
 
@@ -546,6 +549,8 @@ def detect_handle(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.
     xmin, ymin, xmax, ymax = [int(v) for v in drawer_bbox]
     x_drawer, y_drawer = int((xmin + xmax) // 2), int((ymin + ymax) // 2)
     
+    print(f"Handle pixel: ({x_handle}, {y_handle}), Drawer pixel: ({x_drawer}, {y_drawer})")
+    
     # Check if handle is in the left, right or center of the image
     pos = x_handle - x_drawer
     if pos > 10:
@@ -585,10 +590,174 @@ def detect_handle(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.
     print(f"Hinge pose: {hinge_pose_map}")
 
     return handle_pose_map, open_dir, hinge_pose_map
-        
+
+def detect_door_handle(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.ndarray) -> tuple[Pose3D, str, Pose3D]:
+    """
+    Detect the handle of a drawer and calculate its pose in the map frame.
+    Handle and hinge are chosen to be closest to xmin or xmax of the cabinet drawer.
+
+    Args:
+        tf_node (FrameTransformer): ROS2 node for transforming frames
+        depth_img (np.ndarray): Depth image
+        rgb_img (np.ndarray): RGB image
+
+    Returns:
+        tuple[Pose3D, str, Pose3D]: Handle pose in map frame, opening direction, hinge pose in map frame
+    """
+    # Get predictions from drawer detection model
+    predictions = door_predict(rgb_img, config, input_format="rgb", vis_block=False)
+    matches = drawer_handle_matches(predictions)
+
+    test_prints(matches, rgb_img)
+    # Filter matches
+    filtered_matches = [m for m in matches if (m.handle is not None and m.drawer is not None)]
+
+    if not filtered_matches:
+        print("No valid handle-drawer matches found.")
+        return None, None, None
+
+    # Sort by handle center closeness to drawer edge (xmin or xmax)
+    sorted_matches = sorted(
+        filtered_matches,
+        key=lambda m: min(
+            abs(((m.handle.bbox[0] + m.handle.bbox[2]) // 2) - int(m.drawer.bbox[0])),
+            abs(((m.handle.bbox[0] + m.handle.bbox[2]) // 2) - int(m.drawer.bbox[2]))
+        )
+    )
+
+    # Pick the best match
+    best_match = sorted_matches[0]
+    handle_bbox = [int(v) for v in best_match.handle.bbox]
+    drawer_bbox = [int(v) for v in best_match.drawer.bbox]
+
+    # Handle center
+    hxmin, hymin, hxmax, hymax = handle_bbox
+    x_handle, y_handle = (hxmin + hxmax) // 2, (hymin + hymax) // 2
+
+    # Drawer center + edges
+    dxmin, dymin, dxmax, dymax = drawer_bbox
+    x_drawer, y_drawer = (dxmin + dxmax) // 2, (dymin + dymax) // 2
+
+    print(f"Handle bbox={handle_bbox}, center=({x_handle},{y_handle})")
+    print(f"Drawer bbox={drawer_bbox}, center=({x_drawer},{y_drawer})")
+
+    # Decide hinge based on which edge handle is closest to
+    if abs(x_handle - dxmin) < abs(x_handle - dxmax):
+        x_hinge = dxmin
+        open_dir = "left"
+    else:
+        x_hinge = dxmax
+        open_dir = "right"
+    y_hinge = y_handle
+
+    print(f"Selected hinge pixel=({x_hinge},{y_hinge}), open_dir={open_dir}")
+
+    # === Project handle + hinge pixels into 3D ===
+    camera_matrix = intrinsics_from_camera('/gripper_camera/color/camera_info')
+    fx, fy = camera_matrix[0, 0], camera_matrix[1, 1]
+    cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
+
+    # Handle 3D
+    depth = depth_img[y_handle, x_handle]
+    z = depth / 1000.0
+    x = (x_handle - cx) * z / fx
+    y = (y_handle - cy) * z / fy
+    handle_pose_gripper = np.array((x, y, z, 1.0))
+
+    # Hinge 3D
+    depth = depth_img[y_hinge, x_hinge]
+    z = depth / 1000.0
+    x = (x_hinge - cx) * z / fx
+    y = (y_hinge - cy) * z / fy
+    hinge_pose_gripper = np.array((x, y, z, 1.0))
+
+    # === Transform into map frame ===
+    tf = tf_node.get_tf_matrix("map", "gripper_camera_color_optical_frame")
+    spin_until_complete(tf_node)
+
+    handle_pose_map = tf @ handle_pose_gripper
+    hinge_pose_map = tf @ hinge_pose_gripper
+
+    handle_pose_map = Pose3D(handle_pose_map[:3])
+    hinge_pose_map = Pose3D(hinge_pose_map[:3])
+
+    print(f"Handle pose (map): {handle_pose_map}")
+    print(f"Hinge pose (map): {hinge_pose_map}")
+
+    return handle_pose_map, open_dir, hinge_pose_map
+
+def test_prints(matches, rgb_img, save_path="handle_door_match_5.png"):
+    if not matches:
+        print("No matches found.")
+        return None
+
+    # Already sorted outside, so just take the best
+    best_match = matches[0]
+
+    # Handle
+    hxmin, hymin, hxmax, hymax = [int(v) for v in best_match.handle.bbox]
+    x_handle, y_handle = (hxmin + hxmax) // 2, (hymin + hymax) // 2
+    handle_conf = getattr(best_match.handle, "conf", None)
+
+    # Drawer
+    dxmin, dymin, dxmax, dymax = [int(v) for v in best_match.drawer.bbox]
+    x_drawer, y_drawer = (dxmin + dxmax) // 2, (dymin + dymax) // 2
+    drawer_conf = getattr(best_match.drawer, "conf", None)
+
+    # Print info
+    print("=== Selected Match (handle closest to drawer edge) ===")
+    if handle_conf is not None:
+        print(f"Handle | conf={handle_conf:.2f} | bbox=({hxmin},{hymin},{hxmax},{hymax}) | center=({x_handle},{y_handle})")
+    else:
+        print(f"Handle | bbox=({hxmin},{hymin},{hxmax},{hymax}) | center=({x_handle},{y_handle})")
+
+    if drawer_conf is not None:
+        print(f"Drawer | conf={drawer_conf:.2f} | bbox=({dxmin},{dymin},{dxmax},{dymax}) | center=({x_drawer},{y_drawer})")
+    else:
+        print(f"Drawer | bbox=({dxmin},{dymin},{dxmax},{dymax}) | center=({x_drawer},{y_drawer})")
+
+    # Visualize
+    vis = rgb_img.copy()
+
+    # Draw handle (green)
+    cv2.rectangle(vis, (hxmin, hymin), (hxmax, hymax), (0, 255, 0), 2)
+    cv2.circle(vis, (x_handle, y_handle), 5, (0, 255, 0), -1)
+    handle_label = f"Handle ({handle_conf:.2f})" if handle_conf is not None else "Handle"
+    cv2.putText(vis, handle_label, (hxmin, max(0, hymin - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+    # Draw drawer (blue)
+    cv2.rectangle(vis, (dxmin, dymin), (dxmax, dymax), (255, 0, 0), 2)
+    cv2.circle(vis, (x_drawer, y_drawer), 5, (255, 0, 0), -1)
+    drawer_label = f"Drawer ({drawer_conf:.2f})" if drawer_conf is not None else "Drawer"
+    cv2.putText(vis, drawer_label, (dxmin, max(0, dymin - 10)),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+    cv2.imwrite(save_path, vis)
+    print(f"Visualization saved to {save_path}")
+
 
 def main() -> None:
-    _, dict = yolo_detect_object("watering can", "gripper")
+    # def save_head_rgb_image():
+    #     rclpy.init()
+    #     node = rclpy.create_node('save_head_rgb_image')
+    #     bridge = CvBridge()
+    #     msg = rclpy.task.spin_until_future_complete(
+    #         node,
+    #         rclpy.task.Future(lambda: None),
+    #         lambda: node.create_subscription(RosImage, '/camera/color/image_raw', lambda m: setattr(node, 'img_msg', m), 1)
+    #     )
+    #     # Wait for image
+    #     while not hasattr(node, 'img_msg'):
+    #         rclpy.spin_once(node)
+    #     img_msg = node.img_msg
+    #     cv_img = bridge.imgmsg_to_cv2(img_msg, desired_encoding='bgr8')
+    #     cv2.imwrite(os.path.join(IMG_DIR, "head_aligned_rgb.png"), cv_img)
+    #     node.destroy_node()
+    #     rclpy.shutdown()
+
+    # save_head_rgb_image()
+    _, dict = yolo_detect_object("bottle", "head")
     x1, y1, x2, y2 = map(int, dict["box"])
     _, _, _ = sam_detect_object("gripper", (x1+x2)/2, (y1+y2)/2)
     
