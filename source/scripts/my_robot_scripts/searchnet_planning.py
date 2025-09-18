@@ -4,6 +4,7 @@ import numpy as np
 import open3d as o3d
 import os
 from scipy.spatial.transform import Rotation as R
+import cv2
 
 from stretch_package.stretch_state.frame_transformer import FrameTransformer
 from utils.coordinates import Pose3D
@@ -157,17 +158,21 @@ def get_shelf_front_normal(furniture_pcd: o3d.geometry.PointCloud, furniture_nam
                     'normal': normal,
                     'area': area,
                 })
+                
+    front = {}
     if not vertical_faces:
-        raise ValueError("No vertical faces found in shelf structure")
-    
-    if furniture_name in ["armchair", "couch", "sofa"]:
-        front = min(vertical_faces, key=lambda x: x['area'])
-    # Select largest vertical face as front
+        if furniture_name in ["coffee table"]:
+            front['normal'] = np.array([0.0, 1.0, 0.0])
+        print("No vertical faces found in shelf structure")
     else:
-        front = max(vertical_faces, key=lambda x: x['area'])
+        print(f"Vertical faces found: {len(vertical_faces)}")
+        if furniture_name in ["armchair", "couch", "sofa"]:
+            front = min(vertical_faces, key=lambda x: x['area'])
+        # Select largest vertical face as front
+        else:
+            front = max(vertical_faces, key=lambda x: x['area'])
     
-    if furniture_name in ["coffee table"]:
-        front['normal'] = np.array([0.0, 1.0, 0.0])
+    
     
     return front['normal']
 
@@ -179,7 +184,7 @@ def plan_drawer_search(furniture_name: str, center: np.ndarray, drawer_center: P
     # Get all cabinets/shelfs in the environment
     for idx in range(0, 10):
         furnitures = "kitchen cabinet, shelf"
-        furniture_pcd, env_pcd = get_mask_points(furnitures, Config(), idx=idx, vis_block=VIS_BLOCK)
+        furniture_pcd, env_pcd, _ = get_mask_points(furnitures, Config(), idx=idx, vis_block=VIS_BLOCK)
         furniture_center = np.mean(np.asarray(furniture_pcd.points), axis=0)
         # Find correct furniture
         if (np.allclose(furniture_center, center, atol=0.1)):
@@ -239,8 +244,8 @@ def plan_furniture_search(obj: str, index: int|None=None) -> tuple[Pose3D, str, 
                 furniture_center,
                 furniture_normal=front_normal,
                 min_target_distance=radius,
-                max_target_distance=radius+0.1,
-                min_obstacle_distance=0.1,
+                max_target_distance=radius+0.2,
+                min_obstacle_distance=0.4,
                 n=5,
                 vis_block=VIS_BLOCK,
             )
@@ -307,9 +312,9 @@ def plan_object_search(
         furniture_normal=front_normal,
         floor_height_thresh=-0.1,
         body_height=1.0,
-        min_target_distance=0.4,
-        max_target_distance=0.4,
-        min_obstacle_distance=0.3,
+        min_target_distance=0.5,
+        max_target_distance=0.6,
+        min_obstacle_distance=0.4,
         n=5,
         vis_block=VIS_BLOCK
     )
@@ -346,6 +351,37 @@ def filter_drawers(in_scene_graph: bool, graph_data: dict, connections: dict, ch
     
     return fitting_drawers
 
+def plan_door_search(furniture_name: str, center: np.ndarray, drawer_center: Pose3D, dist: float, rgb_img: np.ndarray) -> tuple[Pose3D, np.ndarray]:
+    """
+    Plan the search for the object inside drawers.
+    """
+    # Get all cabinets/shelfs in the environment
+    for idx in range(0, 10):
+        furnitures = "kitchen cabinet, shelf"
+        furniture_pcd, env_pcd, _ = get_mask_points(furnitures, Config(), idx=idx, vis_block=VIS_BLOCK)
+        furniture_center = np.mean(np.asarray(furniture_pcd.points), axis=0)
+        # Find correct furniture
+        if (np.allclose(furniture_center, center, atol=0.1)):
+            print("Shelf/Cabinet found!")
+            # Get normal of furniture front face
+            front_normal = get_shelf_front_normal(furniture_pcd, furniture_name)
+            print(f"Front normal: {front_normal}")
+            drawer_center.set_rot_from_direction(-front_normal)
+            print(f"Drawer center: {drawer_center.as_ndarray()}")
+            # Calculate body position in front of furniture
+            body_pose = body_planning_front(
+                env_pcd,
+                target=drawer_center.as_ndarray(),
+                furniture_normal=front_normal,
+                floor_height_thresh=-0.1,
+                min_target_distance=dist,
+                max_target_distance=dist+0.2,
+                min_obstacle_distance=0.2,
+                n=5,
+                vis_block=VIS_BLOCK,
+            )
+            break
+    return body_pose, front_normal
 
 if __name__ == "__main__":
     plan_furniture_search("book", 0)

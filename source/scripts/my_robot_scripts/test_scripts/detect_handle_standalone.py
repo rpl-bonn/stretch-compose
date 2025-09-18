@@ -61,7 +61,7 @@ def get_handle_pose():
     VIS_BLOCK = False
     SAVE_BLOCK = True
     NO_PROPOSALS = 3
-    OBJECT = "tennis ball"
+    OBJECT = "bottle"
 
     # Config and Paths
     config = Config()

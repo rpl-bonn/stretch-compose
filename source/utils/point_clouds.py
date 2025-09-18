@@ -583,6 +583,116 @@ def test():
 
     o3d.visualization.draw_geometries([x, y])
 
+def body_planning_door(
+    env_cloud: PointCloud,
+    target: np.ndarray,
+    furniture_normal: np.ndarray,
+    floor_height_thresh: float = 0,
+    body_height: float = 0.45,
+    min_target_distance: float = 0.75,
+    max_target_distance: float = 1,
+    min_obstacle_distance: float = 0.5,
+    n: int = 4,
+    vis_block: bool = False
+) -> Pose3D:
+    """
+    Plans a frontal position for the robot.
+    :param env_cloud: the point cloud *without* the item
+    :param target: target coordinates for grasping
+    :param furniture_normal: normal of the front face
+    :param floor_height_thresh: z value under which to cut floor
+    :param body_height: height of robot body
+    :param min_distance: minimum distance from object
+    :param max_distance: max distance from object
+    :param lam: trade-off between distance to obstacles and distance to target, higher
+    lam, more emphasis on distance to target
+    :param n_best: number of positions to return
+    :param vis_block: whether to visualize the position
+    :return: list of viable coordinates ranked by score
+    """
+    start_time = time.time_ns()
+    # Delete floor from point cloud, so it doesn't interfere with the SDF
+    points = np.asarray(env_cloud.points)
+    min_points = np.min(points, axis=0)
+    max_points = np.max(points, axis=0)
+    points_bool = points[:, 2] > floor_height_thresh
+    index = np.where(points_bool)[0]
+    pc_no_ground = env_cloud.select_by_index(index)
+
+    # get points radiating outwards from target coordinate
+    circle_points = get_circle_points(
+        resolution=32,
+        nr_circles=2,
+        start_radius=min_target_distance,
+        end_radius=max_target_distance,
+        return_cartesian=True,
+    )
+    ## get center of radiating circle
+    target_at_body_height = target.copy()
+    target_at_body_height[-1] = body_height
+    target_at_body_height = target_at_body_height.reshape((1, 1, 3))
+    ## add the radiating circle center to the points to elevate them
+    circle_points = circle_points + target_at_body_height
+    ## filter every point that is outside the scanned scene
+    circle_points_bool = (min_points <= circle_points) & (circle_points <= max_points)
+    circle_points_bool = np.all(circle_points_bool, axis=2)
+    filtered_circle_points = circle_points[circle_points_bool]
+    filtered_circle_points = filtered_circle_points.reshape((-1, 3))
+
+    # transform point cloud to mesh to calculate SDF from
+    pc_no_ground = pc_no_ground.voxel_down_sample(voxel_size=0.01)
+    pc_no_ground.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.01, max_nn=30))
+    mesh_no_ground, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(pc_no_ground, depth=6)
+    mesh_no_ground_legacy = o3d.t.geometry.TriangleMesh.from_legacy(mesh_no_ground)
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(mesh_no_ground_legacy)
+
+    # of the filtered points, cast ray from target to point to see if there are collisions
+    ray_directions = filtered_circle_points - target
+    rays_starts = np.tile(target, (ray_directions.shape[0], 1))
+    rays = np.concatenate([rays_starts, ray_directions], axis=1)
+    rays_tensor = o3d.core.Tensor(rays, dtype=o3d.core.Dtype.Float32)
+    response = scene.cast_rays(rays_tensor)
+    direct_connection_bool = response["t_hit"].numpy() > 1
+    filtered_circle_points = filtered_circle_points[direct_connection_bool]
+    circle_tensors = o3d.core.Tensor(filtered_circle_points, dtype=o3d.core.Dtype.Float32)
+
+    # calculate the best body positions
+    ## calculate SDF distances
+    distances = scene.compute_signed_distance(circle_tensors).numpy()
+    valid_points = circle_tensors[np.abs(distances) > min_obstacle_distance]
+    valid_points_num = valid_points.numpy()
+
+    # select coordinates most aligned with front plane normal
+    directions = valid_points_num - target
+    directions = directions / np.linalg.norm(directions, axis=1)[:, None]
+    furniture_normal = furniture_normal / np.linalg.norm(furniture_normal)
+    cosine_angles = np.dot(directions, furniture_normal)
+    most_aligned_point_index = np.argmax(cosine_angles)
+    selected_coordinates = valid_points_num[most_aligned_point_index]
+
+    if vis_block:
+        # draw the entries in the cloud
+        x = o3d.geometry.TriangleMesh.create_sphere(radius=0.1)
+        x.translate(target.reshape(3, 1))
+        x.paint_uniform_color((1, 0, 0))
+        y = copy.deepcopy(env_cloud)
+        y = add_coordinate_system(y, (1, 0, 0), (0, 0, 0))
+        drawable_geometries = [x, y]
+        for idx, coordinate in enumerate(np.array([selected_coordinates]), 1):
+            sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.05)
+            sphere.translate(coordinate)
+            color = np.asarray([0, 1, 0]) * (idx / (2 * n) + 0.5)
+            sphere.paint_uniform_color(color)
+            drawable_geometries.append(sphere)
+        o3d.visualization.draw_geometries(drawable_geometries)
+
+    pose = Pose3D(selected_coordinates)
+    pose.set_rot_from_direction(target - selected_coordinates)
+    end_time = time.time_ns()
+    minutes, seconds = convert_time(end_time - start_time)
+    print(f"\nBody planning RUNTIME: {minutes}min {seconds}s\n")
+    return pose
 
 if __name__ == "__main__":
     test()

@@ -171,7 +171,33 @@ def push(pose_node: JointPoseController, height: float) -> None:
     pose_node.send_joint_pose(push_pose)
     spin_until_complete(pose_node)
 
+def pull_door(pose_node: JointPoseController):
+    """
+    Exectue a pulling motion (e.g. for drawers).
+    This function moves the arm in front of the drawer handle, opens the gripper, moves the arm to the handle, closes the gripper,
+    and pulls the drawer open.
 
+    Args:
+        pose_node (JointPoseController): ROS2 node for joint pose control
+        transform_node (FrameTransformer): ROS2 node for frame transformation
+        handle_center (Pose3D): position of drawer handle in 3D space
+
+    Returns:
+        Pose3D: end pose of the gripper after pulling
+    """
+    # Open gripper and move arm towards door handle
+    set_gripper(pose_node, 0.4)
+    pull_pose_start = {'wrist_extension': (0.5, 40.0)}
+    pose_node.send_joint_pose(pull_pose_start)
+    spin_until_complete(pose_node)
+    # Close gripper to grab handle and pull door
+    set_gripper(pose_node, -0.01)
+    # pull_pose_end = {'wrist_extension': 0.05}
+    # pose_node.send_joint_pose(pull_pose_end)
+    # spin_until_complete(pose_node)
+    # time.sleep(2.0)
+    
+    
 def adapt_body(best_pose: Pose3D, best_grasp: Pose3D) -> Pose3D:
     # Get extra offset from body-grasp distance
     print(f"body-grasp dist: {np.linalg.norm(best_pose.to_dimension(2).coordinates - best_grasp.to_dimension(2).coordinates)}")
@@ -201,6 +227,14 @@ def adapt_grasp(tf_node: FrameTransformer, grasp_pose: np.ndarray, min_height: f
         grasp_pose[2, 3] = min_height
     tf = tf_node.get_tf_matrix("base_link", "map")
     tf_in_base = tf @ grasp_pose
+    R = tf_in_base[:3, :3]
+    z_axis = R[:, 2]
+    if z_axis[2] < 0:  # local z points downward
+        flip_x = np.array([[1, 0, 0],
+                           [0, -1, 0],
+                           [0, 0, -1]])
+        R = R @ flip_x
+        tf_in_base[:3, :3] = R
     rotation = tf_in_base[:3, :3].copy()
     euler_angles = Rotation.from_matrix(rotation).as_euler('xyz', degrees=True)
     if 0 < euler_angles[2] < 180:  # if yaw angle is between 0 and 180 degrees, mirror it
@@ -330,7 +364,7 @@ def find_new_grasp_dynamically(
     
     try:
         # Get grasp pose
-        tf_matrices, widths, scores = gpd_predict_full_grasp(pcd_obj, pcd_env, config, vis_block=True)
+        tf_matrices, widths, scores = gpd_predict_full_grasp(pcd_obj, pcd_env, config, vis_block=False)
         
         
         tf_matrices, widths, scores = filter_grasps(tf_node, tf_matrices, widths, scores)
