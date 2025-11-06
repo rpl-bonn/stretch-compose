@@ -61,3 +61,6 @@ ipad_scans/
 2. Start the **YOLO Drawer** docker
 3. Run `scenegraph_preprocessing.py`
 	1. This will create the scene graph from the mask3d segmentation & save it to different **JSON files**
+
+ ## [Optional] Visualize Centroid IDs
+ Run `/bin/python /home/ws/source/scripts/preprocessing_scripts/centroid_position_finder.py`
