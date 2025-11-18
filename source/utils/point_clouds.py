@@ -12,7 +12,7 @@ from stretch_package.stretch_images.rgb_image_subscriber import RGBImageSubscrib
 from stretch_package.stretch_movement.move_to_pose import JointPoseController
 from stretch_package.stretch_movement.move_to_position import JointPositionController
 from stretch_package.stretch_state.frame_transformer import FrameTransformer
-from utils.coordinates import Pose3D, get_circle_points, get_arc_view_poses
+from utils.coordinates import Pose3D, get_circle_points, get_arc_view_poses, get_drawer_view_poses, get_door_view_poses
 from utils.importer import PointCloud
 from utils.mask3D_interface import get_coordinates_from_item
 from utils import recursive_config
@@ -394,7 +394,7 @@ def icp(
 
 
 def collect_dynamic_point_cloud(
-    obj: str, pos_node: JointPositionController, pose_node: JointPoseController, tf_node: FrameTransformer, start_pose: Pose3D, target_pose: Pose3D, full_env_pcd, offset: float = 20
+    obj: str, pos_node: JointPositionController, pose_node: JointPoseController, tf_node: FrameTransformer, start_pose: Pose3D, target_pose: Pose3D, full_env_pcd, mode: str = "arc", offset: float = 20
 ) -> PointCloud:
     """
     Collect a point cloud of an object in front of the gripper.
@@ -411,8 +411,10 @@ def collect_dynamic_point_cloud(
     pcds_masked = []
     pcds_full = []
     voxel_size = 0.01
-    
-    angled_view_poses = get_arc_view_poses(start_pose, target_pose, offset)
+    if mode == "arc":
+        angled_view_poses = get_arc_view_poses(start_pose, target_pose, offset)
+    elif mode == "drawer_front":
+        angled_view_poses = get_drawer_view_poses(start_pose, target_pose)
 
     for i, angled_pose in enumerate(angled_view_poses):
         move_arm(pos_node, angled_pose)
@@ -502,6 +504,126 @@ def collect_dynamic_point_cloud(
     o3d.io.write_point_cloud(path+"env_cloud_vp.ply", lim_env_cloud)
     
     return pcd_obj, lim_env_cloud    
+
+def collect_drawer_point_cloud(
+    obj: str,
+    pos_node: JointPositionController,
+    pose_node: JointPoseController,
+    tf_node: FrameTransformer,
+    start_pose: Pose3D,
+    target_pose: Pose3D,
+    full_env_pcd,
+    yaw_offset: float = 10.0,
+    save_images: bool = False
+) -> PointCloud:
+    """
+    Collect a point cloud of an object inside a drawer using the wrist camera.
+    Views are limited to small yaw offsets (left, center, right).
+    :param obj: object name for detection
+    :param pos_node: JointPositionController
+    :param pose_node: JointPoseController
+    :param tf_node: FrameTransformer
+    :param start_pose: starting gripper pose
+    :param target_pose: target object pose
+    :param full_env_pcd: global environment point cloud (optional)
+    :param yaw_offset: maximum yaw offset (degrees) for side views
+    :param save_images: if True, save RGB snapshots for debugging/dataset
+    :return: (pcd_obj, pcd_env) fused object and environment point clouds
+    """
+    from utils.coordinates import get_drawer_view_poses
+
+    pcds_down, pcds_masked, pcds_full = [], [], []
+    voxel_size = 0.01
+    view_poses = get_drawer_view_poses(start_pose, target_pose, yaw_offset)
+
+    for i, view_pose in enumerate(view_poses):
+        move_arm(pos_node, view_pose)
+        time.sleep(0.5)
+
+        # Capture RGB + depth
+        rgb = get_rgb_picture(
+            RGBImageSubscriber, pose_node,
+            "/gripper_camera/color/image_rect_raw",
+            gripper=True, save_block=False
+        )
+        _ = get_depth_picture(
+            AlignedDepth2ColorSubscriber, pose_node,
+            "/gripper_camera/aligned_depth_to_color/image_raw",
+            gripper=True, save_block=False
+        )
+
+        if save_images:
+            path = "/home/ws/data/images/viewpoints/"
+            os.makedirs(path, exist_ok=True)
+            cv2.imwrite(os.path.join(path, f"drawer_view_{i}.png"), rgb)
+
+        try:
+            _, det_dict = yolo_detect_object(obj, "gripper", save_block=False)
+            x1, y1, x2, y2 = map(int, det_dict["box"])
+            mask, _, _ = sam_detect_object("gripper", (x1 + x2) / 2, (y1 + y2) / 2, i)
+
+            pcd_masked = get_cloud_from_gripper_detection(tf_node, mask)
+            pcds_masked.append(pcd_masked)
+
+            pcd_full = get_cloud_from_gripper_detection(tf_node)
+            pcds_full.append(pcd_full)
+
+            pcd_down = pcd_full.voxel_down_sample(voxel_size)
+            pcd_down.estimate_normals(
+                search_param=o3d.geometry.KDTreeSearchParamHybrid(
+                    radius=voxel_size * 2, max_nn=30
+                )
+            )
+            pcds_down.append(pcd_down)
+        except Exception as e:
+            print(f"Failed detecting object in drawer view {i}: {e}")
+
+    if not pcds_down:
+        return None, None
+
+    # Registration across views
+    max_corr_coarse = voxel_size * 5
+    max_corr_fine = voxel_size * 1.5
+    pose_graph = full_registration(pcds_down, max_corr_coarse, max_corr_fine)
+    option = o3d.pipelines.registration.GlobalOptimizationOption(
+        max_correspondence_distance=max_corr_fine,
+        edge_prune_threshold=0.25,
+        reference_node=len(pcds_down) - 1,
+    )
+    o3d.pipelines.registration.global_optimization(
+        pose_graph,
+        o3d.pipelines.registration.GlobalOptimizationLevenbergMarquardt(),
+        o3d.pipelines.registration.GlobalOptimizationConvergenceCriteria(),
+        option,
+    )
+
+    # Fuse object
+    obj_points, obj_colors = [], []
+    for idx, p in enumerate(pcds_masked):
+        p.transform(pose_graph.nodes[idx].pose)
+        obj_points.extend(np.asarray(p.points))
+        obj_colors.extend(np.asarray(p.colors))
+    pcd_obj = o3d.geometry.PointCloud()
+    pcd_obj.points = o3d.utility.Vector3dVector(obj_points)
+    pcd_obj.colors = o3d.utility.Vector3dVector(obj_colors)
+    pcd_obj, _ = pcd_obj.remove_statistical_outlier(nb_neighbors=20, std_ratio=1.6)
+
+    # Fuse environment
+    env_points, env_colors = [], []
+    for idx, p in enumerate(pcds_full):
+        p.transform(pose_graph.nodes[idx].pose)
+        env_points.extend(np.asarray(p.points))
+        env_colors.extend(np.asarray(p.colors))
+    pcd_env = o3d.geometry.PointCloud()
+    pcd_env.points = o3d.utility.Vector3dVector(env_points)
+    pcd_env.colors = o3d.utility.Vector3dVector(env_colors)
+    pcd_env, _ = pcd_env.remove_statistical_outlier(nb_neighbors=20, std_ratio=1.6)
+    pcd_env.estimate_normals(
+        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.02 * 2, max_nn=30)
+    )
+
+    return pcd_obj, pcd_env
+
     
 def pairwise_registration(source, target, max_corr_coarse, max_corr_fine):
     icp_coarse = o3d.pipelines.registration.registration_icp(

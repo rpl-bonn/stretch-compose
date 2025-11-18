@@ -563,6 +563,81 @@ def spherical_angle_views_from_target(
 
     return poses
 
+def get_drawer_view_poses(start_pose: Pose3D, target_pose: Pose3D, yaw_offset_deg: float = 10.0) -> list[Pose3D]:
+    """
+    Given a start and target pose inside a drawer, calculate 3 view poses:
+    - one slightly yawed left from the start pose,
+    - one slightly yawed right from the start pose,
+    - and the original straight-on pose.
+    All three look at the target pose.
+
+    :param start_pose: Pose3D of the starting pose (centered on drawer)
+    :param target_pose: Pose3D of the drawer/object center
+    :param yaw_offset_deg: maximum yaw offset in degrees (small, e.g. 5-15)
+    :return: list of 3 Pose3D objects
+    """
+    target_coordinates = target_pose.as_ndarray()
+    start_rot_matrix = start_pose.rot_matrix
+    distance = np.linalg.norm(target_coordinates - start_pose.as_ndarray())
+
+    # Small yaw sweep left, center, right (no vertical pitch)
+    yaw_offsets = np.radians([-yaw_offset_deg, 0.0, yaw_offset_deg])
+
+    poses = []
+    for yaw in yaw_offsets:
+        # Rotate only around z (yaw)
+        yaw_matrix = Rotation.from_euler("z", yaw).as_matrix()
+        rot_matrix = start_rot_matrix @ yaw_matrix
+        new_pose = Pose3D(target_coordinates, rot_matrix)
+        poses.append(pose_distanced(new_pose, distance, negate=True))
+
+    return poses
+
+from utils.coordinates import Pose3D, pose_distanced
+from scipy.spatial.transform import Rotation
+import numpy as np
+
+def get_door_view_poses(start_pose: Pose3D,
+                        target_pose: Pose3D,
+                        door_side: str,
+                        lateral_offset: float = 0.05,
+                        add_side_view: bool = False) -> list[Pose3D]:
+    """
+    Generate view poses for objects inside a swing door (drawer_right or drawer_left).
+    
+    :param start_pose: Pose3D of the starting pose (camera facing cavity)
+    :param target_pose: Pose3D of the object inside cavity
+    :param door_side: "drawer_right" or "drawer_left"
+    :param lateral_offset: offset in meters parallel to door plane (default 5 cm)
+    :param add_side_view: if True, add an extra shifted view toward open side
+    :return: list of Pose3D objects (1 or 2 poses)
+    """
+    target_coordinates = target_pose.as_ndarray()
+    start_rot_matrix = start_pose.rot_matrix
+    distance = np.linalg.norm(target_coordinates - start_pose.as_ndarray())
+
+    poses = []
+
+    # Frontal pose (straight in)
+    frontal_pose = Pose3D(target_coordinates, start_rot_matrix)
+    poses.append(pose_distanced(frontal_pose, distance, negate=True))
+
+    if add_side_view:
+        # Determine shift direction: +x vs -x in camera frame
+        if door_side == "drawer_right":
+            shift_dir = np.array([-1.0, 0.0, 0.0])  # shift left
+        elif door_side == "drawer_left":
+            shift_dir = np.array([+1.0, 0.0, 0.0])  # shift right
+        else:
+            raise ValueError(f"Unknown door_side {door_side}")
+
+        # Apply lateral shift in world frame
+        shift_world = start_rot_matrix @ shift_dir * lateral_offset
+        shifted_pose = Pose3D(target_coordinates + shift_world, start_rot_matrix)
+        poses.append(pose_distanced(shifted_pose, distance, negate=True))
+
+    return poses
+
 
 def get_arc_view_poses(start_pose: Pose3D, target_pose: Pose3D, offset: float) -> list[Pose3D]:
     """
