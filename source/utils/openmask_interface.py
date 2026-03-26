@@ -14,9 +14,93 @@ from utils import recursive_config
 from utils.docker_communication import _get_content
 from utils.recursive_config import Config
 from sklearn.cluster import DBSCAN
+import cv2
 
 MODEL, PREPROCESS = clip.load("ViT-L/14@336px", device="cpu")
 
+def select_with_clip(crops: list[dict], query: str, device="cpu", top_k: int = 1, VIS_BLOCK: bool = False, image_path=None, img_dir: str="/home/ws/data/images/") -> list[dict]:
+    """
+    Compare SAM2 crops with a query object using CLIP and return the most similar ones.
+
+    Args:
+        crops (list[dict]): list of dicts from sam_random_detect with keys:
+                            "crop" (PIL.Image), "mask", "score", "logits"
+        query (str): target object name to search for
+        device (str): 'cpu' or 'cuda'
+        top_k (int): number of best matches to return
+        VIS_BLOCK (bool): if True, visualize results on original image
+        image (PIL.Image or None): full RGB image (needed for visualization)
+
+    Returns:
+        list[dict]: top-k crop entries with bbox and similarity
+    """
+    if not crops:
+        return []
+
+    # Preprocess crops
+    images = [PREPROCESS(c["crop"]).unsqueeze(0).to(device) for c in crops]
+    image_batch = torch.cat(images, dim=0)
+
+    # Encode images and text
+    with torch.no_grad():
+        img_features = MODEL.encode_image(image_batch)
+        txt_features = MODEL.encode_text(clip.tokenize([query]).to(device))
+
+    # Normalize
+    img_features /= img_features.norm(dim=-1, keepdim=True)
+    txt_features /= txt_features.norm(dim=-1, keepdim=True)
+
+    # Cosine similarity
+    sims = (img_features @ txt_features.T).squeeze(1).cpu().numpy()
+    top_idx = np.argsort(sims)[::-1][:top_k]
+
+    results = []
+    for idx in top_idx:
+        mask = crops[idx]["mask"]
+        ys, xs = np.where(mask)
+        if len(xs) == 0 or len(ys) == 0:
+            continue
+        bbox = (xs.min(), ys.min(), xs.max(), ys.max())
+        entry = {
+            "crop": crops[idx]["crop"],
+            "mask": mask,
+            "score": crops[idx]["score"],
+            "logits": crops[idx]["logits"],
+            "bbox": bbox,
+            "similarity": sims[idx]
+        }
+        print("found bbox", bbox, f"similarity {sims[idx]:.3f}")
+        results.append(entry)
+
+    # Visualization
+    if VIS_BLOCK and image_path is not None:
+        image = cv2.imread(image_path)
+        if image is None:
+            raise ValueError("The 'image' argument must be provided for visualization (VIS_BLOCK=True).")
+        img_cv = np.array(image)[:, :, ::-1].copy()  # PIL to OpenCV BGR
+        IMG_DIR = img_dir
+        os.makedirs(IMG_DIR, exist_ok=True)
+        i = 0
+        for r in results:
+            img_cv = np.array(image)[:, :, ::-1].copy()  # PIL to OpenCV BGR
+            i += 1
+            x0, y0, x1, y1 = r["bbox"]
+            cv2.rectangle(img_cv, (x0, y0), (x1, y1), (0, 255, 0), 2)
+            mask = r["mask"].astype(np.uint8) * 255
+            mask_rgb = cv2.merge([mask, mask, mask])
+            masked_img = cv2.addWeighted(img_cv, 0.7, mask_rgb, 0.3, 0)
+            img_cv = masked_img
+            cv2.putText(
+                img_cv, f"{query}: {r['similarity']:.2f}",
+                (x0, max(0, y0 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                (0, 255, 0), 1, cv2.LINE_AA
+            )
+        # Save visualization to IMG_DIR/clip_{idx}
+            out_path = os.path.join(IMG_DIR, f"clip_{i}.png")
+            print(f"Saved CLIP visualization to {out_path}")
+            cv2.imwrite(out_path, img_cv)
+
+    return results
 
 def zip_point_cloud(path: str) -> str:
     name = os.path.basename(path)

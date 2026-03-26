@@ -84,7 +84,7 @@ def move_body(node: BaseController, pose: Pose2D) -> bool:
     return False
 
 
-def turn_body(node: JointPoseController, pose: Pose2D, grasp: bool= True) -> None:
+def turn_body(node: JointPoseController, pose: Pose2D, grasp: bool= True, small: bool = False) -> None:
     """
     Turn the robot to a specified orientation.
     
@@ -92,6 +92,7 @@ def turn_body(node: JointPoseController, pose: Pose2D, grasp: bool= True) -> Non
         node (JointPoseController): ROS2 node to control the robot's base
         pose (Pose2D): Target orientation to turn towards
         grasp (bool): Whether grasping after turning is necessary (turn pi/2 further)
+        small (bool): Whether to turn by a smaller angle
     """
     odom = get_odom()
     current_pos = np.array([odom.pose.pose.position.x, odom.pose.pose.position.y, odom.pose.pose.position.z])
@@ -102,12 +103,17 @@ def turn_body(node: JointPoseController, pose: Pose2D, grasp: bool= True) -> Non
     goal_dir = np.arctan2(goal_pos[1]-current_pos[1], goal_pos[0]-current_pos[0])
     
     if grasp: # Note: Turn pi/2 further to grasp
-        turn_dir = goal_dir - current_dir + np.pi/2.0
+        if small:
+            turn_dir = goal_dir - current_dir + np.pi/1.85
+        else:
+            turn_dir = goal_dir - current_dir + np.pi/2.0
+        print(f"TURN DIR (GRASP): {np.degrees(turn_dir):.2f} degrees")
     else:
         turn_dir = goal_dir - current_dir
     
     norm_turn_dir = turn_dir + np.pi % (2*np.pi) - np.pi
     turn_value = {'rotate_mobile_base': norm_turn_dir}
+    print(f"Turning by {np.degrees(norm_turn_dir):.2f} degrees")
     node.send_joint_pose(turn_value)
     spin_until_complete(node)
 
@@ -123,6 +129,20 @@ def unstow_arm(node: JointPoseController, pose: Pose3D, yaw: float = np.pi/2, pi
         lift (float): Lift reduction for the gripper
     """
     unstow_pos = {'joint_lift': pose.coordinates[2]-lift, 'joint_wrist_yaw': yaw, 'joint_wrist_pitch': pitch, 'joint_wrist_roll': roll}
+    node.send_joint_pose(unstow_pos)
+    spin_until_complete(node)
+    
+def adjust_door(node: JointPoseController, pose: Pose3D, yaw: float = np.pi/2, pitch: float = 0.0, roll: float = 0.0, lift: float = 0.0) -> None:
+    """
+    Put the arm in the "unstow" position.
+    
+    Args:
+        node (JointPoseController): ROS2 node to move arm into a certain pose
+        pose (Pose3D): Target position of object
+        yaw (float): Yaw angle for the gripper
+        lift (float): Lift reduction for the gripper
+    """
+    unstow_pos = {'joint_lift': pose.coordinates[2]-lift,'joint_wrist_pitch': pitch, 'joint_wrist_roll': roll}
     node.send_joint_pose(unstow_pos)
     spin_until_complete(node)
 
@@ -176,7 +196,7 @@ def set_gripper(node: JointPoseController, gripper_open: bool | float) -> None:
     gripper_pos = {'gripper_aperture': fraction}
     node.send_joint_pose(gripper_pos)
     spin_until_complete(node)
-
+    
 
 def move_arm(node: JointPositionController, pose: Pose3D, roll: bool = True, lower: float = 0.03) -> None:
     """

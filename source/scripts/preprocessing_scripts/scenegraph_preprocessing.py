@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import json
 import numpy as np
 import open3d as o3d
@@ -174,13 +173,16 @@ def create_scene_graph(scan_path: str, tform_path: str, data_path: str) -> Scene
     Returns:
         SceneGraph: SceneGraph object containing the scene graph data.
     """
-    remove = ["door", "window", "doorframe", "radiator", "soap dispenser", "board", "object", "book", "fan", "picture", "backpack"]
+    remove = ["window", "doorframe", "radiator", "soap dispenser", "board", "object", "book", "fan", "picture", "backpack"]
     immovable = ["shelf", "bookshelf", "cabinet", "table", "chair", "couch", "armchair", "coffee table", "trash can", "kitchen cabinet", "shelf near door", "end table", "kitchen", "kitchen counter", "ceramic cooktop", "stove", "ceramic hob"]
     
     # Get labels & preprocess scan
     label_map = pd.read_csv(data_path + '/mask3d_label_mapping.csv', usecols=['id', 'category'])
     mask3d_label_mapping = pd.Series(label_map['category'].values, index=label_map['id']).to_dict()
+    print("Creating Scene Graph")
+
     preprocess_scan(scan_path, drawer_detection=DRAWERS)
+
     T_ipad = np.load(scan_path + "/aruco_pose.npy")
     
     # Create scene graph
@@ -214,11 +216,16 @@ def save_to_json(scene_graph: SceneGraph):
 def main():
     try:
         scenegraph_start = time.time_ns()
+
         scene_graph = create_scene_graph(SCAN_DIR, TFORM_DIR, DATA_DIR)
+
         save_to_json(scene_graph)
+
         scenegraph_end = time.time_ns()
         minutes, seconds = convert_time(scenegraph_end - scenegraph_start)
+
         print(f"\nSuccessfully created scene_graph (time: {minutes}min {seconds}s).\n")
+
         #scene_graph.save_visualization(os.path.join(GRAPH_DIR, "visualization.png"), centroids=True, connections=True, labels=True, frame_center=True)
         scene_graph.visualize(labels=True, connections=True, centroids=True, frame_center=True)
     except Exception as e:
@@ -226,6 +233,9 @@ def main():
     
     
 if __name__ == "__main__":
-    # docker run --gpus all -it -v /home:/home -w /home/stretch/workspace/Test/source/Mask3D rupalsaxena/mask3d_docker:latest -c "python3 mask3d.py --seed 42 --workspace /home/stretch/workspace/stretch-compose/data/ipad_scans/2025_09_12 --pcd && chmod -R 777 /home/stretch/workspace/stretch-compose/data/ipad_scans/2025_09_12"
+    # docker run --gpus all -it -v /home:/home -w /home/stretch/workspace/Test/source/Mask3D rupalsaxena/mask3d_docker:latest -c "python3 mask3d.py --seed 42 --workspace /home/stretch/workspace/stretch-compose/data/ipad_scans/2026_03_26 --pcd && chmod -R 777 /home/stretch/workspace/stretch-compose/data/ipad_scans/2026_03_26"
     # docker run -p 5004:5004 --gpus all -it craiden/yolodrawer:v1.0 python3 app.py
     main()
+    
+    # example
+    # docker run --gpus all -it -v /home:/home -w /home/stretch/workspace/Test/source/Mask3D rupalsaxena/mask3d_docker:latest -c "python3 mask3d.py --seed 42 --workspace /home/stretch/workspace/stretch-compose/data/ipad_scans/2025_12_22 --pcd && chmod -R 777 /home/stretch/workspace/stretch-compose/data/ipad_scans/2025_12_22"

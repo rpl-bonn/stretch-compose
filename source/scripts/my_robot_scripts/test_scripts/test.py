@@ -33,12 +33,23 @@ def release_door():
     base_node = BaseController()
     joint_pose_node = JointPoseController()
     sleep_time=1
-    pos_1 = {'wrist_extension': 0.04, 'joint_wrist_yaw': 0.3}
+    pos_1 = {'wrist_extension': 0.02, 'joint_wrist_yaw': 0.3}
+    pos_2 = {'joint_gripper_finger_left': 0.45}
+    pos_3 = {'joint_wrist_yaw': 1.13, 'joint_wrist_pitch': -0.237}
     
     try:
-        joint_pose_node.send_joint_pose(pos_1)
+        # joint_pose_node.send_joint_pose(pos_1)
+        # spin_until_complete(joint_pose_node)
+        # print("Executed Pose 1")
+        # time.sleep(sleep_time)
+
+        set_gripper(joint_pose_node, 0.45)
+        print("Executed Pose 2")
+        time.sleep(sleep_time)
+        
+        joint_pose_node.send_joint_pose(pos_3)
         spin_until_complete(joint_pose_node)
-        print("Executed Pose 1")
+        print("Executed Pose 3")
         time.sleep(sleep_time)
 
         print("Pose sequence completed.")

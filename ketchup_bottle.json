@@ -1,0 +1,23 @@
+{
+    "item": "ketchup bottle",
+    "locations": [
+        {
+            "furniture_id": 17,
+            "furniture_name": "kitchen counter",
+            "relation": "on top of",
+            "room": "Kitchen"
+        },
+        {
+            "furniture_id": 3,
+            "furniture_name": "kitchen shelf",
+            "relation": "on a shelf / stored on",
+            "room": "Kitchen/Entry"
+        },
+        {
+            "furniture_id": 20,
+            "furniture_name": "table",
+            "relation": "on top of",
+            "room": "Living Room"
+        }
+    ]
+}

@@ -1,0 +1,29 @@
+name: audio
+channels:
+  - conda-forge
+  - robostack-humble
+  - defaults
+dependencies:
+  # base
+  - python=3.10
+  - pip
+  - cmake
+  - make
+  - pkg-config
+
+  # ROS 2 Humble essentials
+  - ros-humble-ros-core
+  - ros-humble-rclpy
+  - ros-humble-std-msgs
+  - ros-humble-launch
+  - ros-humble-launch-ros
+
+  # audio playback
+  - alsa-utils
+  - pulseaudio
+
+  # pip packages
+  - pip:
+      - TTS            # Coqui TTS
+      - soundfile      # audio IO
+      - pyttsx3        # fallback TTS

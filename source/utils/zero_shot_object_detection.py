@@ -28,8 +28,13 @@ from utils.robot_utils.basic_movement import spin_until_complete
 from utils.robot_utils.basic_perception import intrinsics_from_camera
 from utils.time import convert_time
 from utils.vis import normalize_image, draw_boxes
-from utils.llm_utils import openai_client
+from utils.llm_utils import openai_client, gemini_client
+import json
+# from utils.sam3_detection import load_model, sam3_inference
 import rclpy
+import io
+from stretch_package.stretch_visualizer import detection_visualizer
+
 
 sys.path.append(os.path.abspath("/home/ws/source/sam2"))
 from sam2.build_sam import build_sam2 # type: ignore
@@ -38,8 +43,28 @@ from utils.openmask_interface import get_mask_points, get_text_similarity, selec
 
 # Fixed
 _PROCESSOR = Owlv2Processor.from_pretrained("google/owlv2-base-patch16-ensemble")
-_MODEL = Owlv2ForObjectDetection.from_pretrained("google/owlv2-base-patch16-ensemble")
+_DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+_MODEL = Owlv2ForObjectDetection.from_pretrained("google/owlv2-base-patch16-ensemble", torch_dtype=torch.float16 if _DEVICE.type == "cuda" else torch.float32,
+  low_cpu_mem_usage=True)
+_MODEL.to(_DEVICE)
+_MODEL.eval()
 _SCORE_THRESH = 0.5
+
+yolo_model = YOLOWorld("/home/ws/source/yolov8x-worldv2.pt")
+yolo_model = yolo_model.to(_DEVICE)   # moves model weights
+yolo_model.eval()
+
+
+if _DEVICE.type == "cuda":
+    torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
+    if torch.cuda.get_device_properties(0).major >= 8:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
+# Load model and image
+sam2_checkpoint = "/home/ws/source/sam2/checkpoints/sam2.1_hiera_large.pt"
+model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
+sam2_predictor = SAM2ImagePredictor(build_sam2(model_cfg, sam2_checkpoint, device=_DEVICE.type))
 
 # Adaptable
 VIS_BLOCK = False
@@ -53,6 +78,47 @@ scan_path = config.get_subpath("ipad_scans")
 SCAN_DIR = os.path.join(scan_path, ending)
 IMG_DIR = config.get_subpath("images")
 
+gemini_predictor = gemini_client.GeminiLocationPredictor()
+
+def parse_detection_output(model_output: dict, img_width: int, img_height: int) -> tuple[bool, dict]:
+    """
+    Convert Gemini JSON output into (detected, detection_dict) with pixel coords.
+
+    Model output box is [y_min, x_min, y_max, x_max] in 0–1000 normalized coords.
+    Converted to pixel coords: (x1, y1, x2, y2).
+    """
+    try:
+        detected = bool(model_output.get("detected", False))
+        detection_dict = {}
+
+        if detected:
+            dd = model_output.get("detection_dict", {})
+            if isinstance(dd, dict) and "box" in dd:
+                y_min, x_min, y_max, x_max = dd["box"]
+
+                x1 = int(x_min / 1000 * img_width)
+                y1 = int(y_min / 1000 * img_height)
+                x2 = int(x_max / 1000 * img_width)
+                y2 = int(y_max / 1000 * img_height)
+
+                detection_dict = {
+                    "label": dd.get("label", ""),
+                    "confidence": float(dd.get("confidence", 0.0)),
+                    "box": (x1, y1, x2, y2)
+                }
+        return detected, detection_dict
+    except Exception:
+        return False, {}
+
+def draw_and_save_detection(img_path, det, save_path):
+    img = cv2.imread(img_path)
+    if img is None or not det: return
+    x1, y1, x2, y2 = map(int, det["box"])
+    cv2.rectangle(img, (x1,y1), (x2,y2), (0,255,0), 2)
+    cv2.putText(img, f'{det["label"]} {det["confidence"]:.2f}',
+                (x1, max(0,y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
+    cv2.imwrite(save_path, img)
+    
 
 def show_masks(image: Image.Image, masks: np.ndarray, scores: np.ndarray, point_coords: np.ndarray=None, input_labels: np.ndarray=None, borders: bool=True) -> None:
     """
@@ -97,7 +163,7 @@ def show_masks(image: Image.Image, masks: np.ndarray, scores: np.ndarray, point_
         plt.axis('off')
         plt.show()
         
-def save_masks(j: int, image: Image.Image, masks: np.ndarray, scores: np.ndarray, point_coords: np.ndarray=None, input_labels: np.ndarray=None, borders: bool=True) -> None:
+def save_masks(j: int, image: Image.Image, masks: np.ndarray, scores: np.ndarray, point_coords: np.ndarray=None, input_labels: np.ndarray=None, borders: bool=True, input_box: np.ndarray=None,) -> None:
     """
     Save the masks of the detected objects on the image.
     This function saves the image with the masks overlaid, along with the sample points and their labels.
@@ -135,6 +201,12 @@ def save_masks(j: int, image: Image.Image, masks: np.ndarray, scores: np.ndarray
             ax.scatter(pos_points[:, 0], pos_points[:, 1], color='green', marker='*', s=375, edgecolor='white', linewidth=1.25)
             ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=375, edgecolor='white', linewidth=1.25)
 
+        if input_box is not None:
+            x0, y0, x1, y1 = map(int, input_box)
+            rect = plt.Rectangle((x0,y0), x1-x0, y1-y0,
+                                 edgecolor='yellow', facecolor='none', lw=2)
+            ax.add_patch(rect)
+            
         if len(scores) > 1:
             ax.set_title(f"Mask {i+1}, Score: {score:.3f}", fontsize=18)
         ax.axis('off')
@@ -174,6 +246,8 @@ def owlv2_detect_objects() -> None:
         
         # Detect objects
         inputs = _PROCESSOR(text=[texts], images=image_pil, return_tensors="pt")
+        inputs = {k: v.to(_DEVICE) if hasattr(v, "to") else v for k, v in inputs.items()}
+
         outputs = _MODEL(**inputs)
         target_sizes = torch.Tensor([image_pil.size[::-1]])
         results = _PROCESSOR.post_process_object_detection(outputs=outputs, threshold=_SCORE_THRESH, target_sizes=target_sizes)
@@ -193,21 +267,95 @@ def owlv2_detect_objects() -> None:
             draw_boxes(image, detections)
             
         print(f"OWL-v2 {detections=}")
-        
+
+def owlv2_detect_object(obj: str, camera: str, conf: float=0.25, save_block: bool = True) -> tuple[bool, dict]:
+    """
+    Detect a specific object in an image using the OWL-ViT model.
+    This function loads the OWL-ViT model, sets the class to detect, processes the image, and returns the detection results.
+
+    Args:
+        obj (str): Object to detect in the image
+        camera (str): Camera with which the image was taken
+        conf (float, optional): Confidence threshold. Defaults to 0.2.
+        save_block (bool, optional): Whether to save the image with detections. Defaults to False.
+
+    Returns:
+        tuple[bool, dict]: Tuple containing a boolean indicating if the object was detected and a dictionary with detection information.
+    """
+    detected = False
+    detection_dict = {}
+    image_path = os.path.join(IMG_DIR, f"{camera}_image_rgb.png")
+    image = cv2.imread(image_path) 
+    if image is None:
+        print(f"Warning: Image file not found at {image_path}. Skipping image check.")
+        return False, {}
+    
+    image = np.asarray(image)
+    
+    image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+    image = normalize_image(image)
+    texts = [f"a photo of a {obj}"]
+    image_pil = Image.fromarray(image)
+    
+    # Detect objects
+    start_time = time.time()
+
+    inputs = _PROCESSOR(text=[texts], images=image_pil, return_tensors="pt")
+    inputs = {k: v.to(_DEVICE) if hasattr(v, "to") else v for k, v in inputs.items()}
+
+    outputs = _MODEL(**inputs)
+    target_sizes = torch.Tensor([image_pil.size[::-1]])
+    results = _PROCESSOR.post_process_object_detection(outputs=outputs, threshold=conf, target_sizes=target_sizes)
+    
+    # Get detection results
+    predictions = results[0]
+    scores = predictions["scores"].cpu().detach().numpy()
+    labels = predictions["labels"].cpu().detach().numpy()      
+    time_elapsed = time.time() - start_time
+    detected = len(scores) > 0
+    if detected:
+        # Pick the highest confidence detection
+        print(f"OWL-v2 detected {obj} with scores: {scores}, labels: {labels} in time {time_elapsed:.2f}s")
+        idx = np.argmax(scores)
+        box = predictions["boxes"][idx]
+        label = labels[idx]
+        confidence = scores[idx]
+        x1, y1, x2, y2 = map(int, box)
+        detection_dict = {
+            'class_id': int(label),
+            'label': obj,
+            'confidence': float(confidence),
+            'box': (x1, y1, x2, y2)
+        }
+        if save_block:
+            img_draw = image.copy()
+            img_draw = cv2.cvtColor(img_draw, cv2.COLOR_BGR2RGB)
+            cv2.rectangle(img_draw, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            cv2.putText(img_draw, f'{detection_dict["label"]} {confidence:.2f}', (x1, max(0, y1-10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,255,0), 2)
+            cv2.imwrite(os.path.join(IMG_DIR, f"{camera}_owlv2_detection.png"), img_draw)
+        if VIS_BLOCK:
+            cv2.imshow("OWL-ViT Detection", image)
+            cv2.waitKey(0)
+            cv2.destroyAllWindows()
+    else:
+        print(f"OWL-v2 did not detect {obj} in time {time_elapsed:.2f}s")
+        detected = False
+        detection_dict = {}
+    return detected, detection_dict
      
 def yolo_detect_objects() -> None:
     """
     Detect objects in images using the YOLO-World model.
     """
     # Load model
-    model = YOLOWorld("/home/ws/source/yolov8x-worldv2.pt")
-    model.set_classes(CLASSES)
-    
+    #model = YOLOWorld("/home/ws/source/yolov8x-worldv2.pt")
+    yolo_model.set_classes(CLASSES)
+
     for image_file in [f for f in os.listdir(IMG_DIR) if f.startswith("frame")]:
         image_path = os.path.join(IMG_DIR, image_file)
         
         # Detect objects
-        results = model.predict(image_path, conf=0.2)
+        results = yolo_model.predict(image_path, conf=0.2)
         if results and len(results[0].boxes) > 0:
             results[0].show()
             
@@ -221,134 +369,95 @@ def yolo_detect_objects() -> None:
                 cv2.waitKey(0)
                 cv2.destroyAllWindows() 
 
-def yolo_detect_object_with_combos(obj: str, camera: str, conf: float=0.2, save_block: bool = False) -> tuple[bool, dict]:
+def yolo_world_detect_object(obj: str, camera: str, conf: float = 0.25, save_block: bool = False) -> tuple[bool, dict]:
     """
-    Detect a specific object in an image using the YOLO-World model.
-    This function loads the YOLO-World model, sets the class to detect, processes the image, and returns the detection results.
-
-    Args:
-        obj (str): Object to detect in the image
-        camera (str): Camera with which the image was taken
-        conf (float, optional): Confidence threshold. Defaults to 0.2.
-        save_block (bool, optional): Whether to save the image with detections. Defaults to False.
-
-    Returns:
-        tuple[bool, dict]: Tuple containing a boolean indicating if the object was detected and a dictionary with detection information.
+    Run YOLO-World detection only.
     """
-    detected = False
-    full = False
-    detection_dict = {}
-    
-    # Always try the full object name first, then try combos if not detected
-    obj_words = obj.split()
-    combos = []
-    if len(obj_words) > 1:
-        last_word = obj_words[-1]
-        for i in range(len(obj_words) - 1):
-            combo = " ".join(obj_words[i:])  # from i to end
-            if combo.split()[-1] == last_word:
-                combos.append(combo)
-        combos = list(dict.fromkeys(combos))  # remove duplicates, preserve order
+    image_path = os.path.join(IMG_DIR, f"{camera}_image_rgb.png")
+    if not os.path.exists(image_path):
+        return False, {}
 
-    # Try full object name first
-    model = YOLOWorld("/home/ws/source/yolov8x-worldv2.pt")
-    print(f"Trying to detect {obj} with YOLO...")
-    model.set_classes([obj])
-    results = model.predict(os.path.join(IMG_DIR, f"{camera}_image_rgb.png"), conf=conf)
-    if results and len(results[0].boxes) > 0:
-        detected = True
-        results[0].show()
+    # Restrict to target class
+    yolo_model.set_classes([obj])
+    results = yolo_model.predict(image_path, conf=conf, device=0)  # run on GPU if available
+    if not results or len(results[0].boxes) == 0:
+        return False, {}
+
+    # Pick highest-confidence box
+    box = max(results[0].boxes, key=lambda b: float(b.conf[0]))
+    class_id = int(box.cls[0])
+    confidence = float(box.conf[0])
+    x1, y1, x2, y2 = map(int, box.xyxy[0])
+
+    detection_dict = {
+        "class_id": class_id,
+        "label": yolo_model.names[class_id],
+        "confidence": confidence,
+        "box": (x1, y1, x2, y2)
+    }
+
+    if save_block:
         img_array = results[0].plot()
-        if save_block:
-            output_path = os.path.join(IMG_DIR, f"{camera}_yolo_detection.png")
-            cv2.imwrite(output_path, img_array)
-        if VIS_BLOCK:
-            cv2.imshow("Object Detection", img_array)
-            cv2.waitKey(0)
-            cv2.destroyAllWindows()
-        box = max(results[0].boxes[0], key=lambda b: b.conf[0])
-        class_id = int(box.cls[0])
-        class_label = f"{model.names[class_id]}"
-        confidence = box.conf[0]
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
-        detection_dict = {
-            'class_id': class_id,
-            'label': class_label,
-            'confidence': confidence,
-            'box': (x1, y1, x2, y2)
-        }
-        print(f"Detection found for full description: {detection_dict}")
-        full = True
-    else:
-        # Try combos if full name not detected
-        print(f"Full description {obj} not detected, trying partial descriptions: {combos}")
-        for candidate in combos:
-            print(f"Trying to detect {candidate} with YOLO...")
-            model = YOLOWorld("/home/ws/source/yolov8x-worldv2.pt")
-            model.set_classes([candidate])
-            results = model.predict(os.path.join(IMG_DIR, f"{camera}_image_rgb.png"), conf=conf)
-            if results and len(results[0].boxes) > 0:
-                detected = True
-                results[0].show()
-                img_array = results[0].plot()
-                if save_block:
-                    output_path = os.path.join(IMG_DIR, f"{camera}_yolo_detection.png")
-                    cv2.imwrite(output_path, img_array)
-                if VIS_BLOCK:
-                    cv2.imshow("Object Detection", img_array)
-                    cv2.waitKey(0)
-                    cv2.destroyAllWindows()
-                box = max(results[0].boxes[0], key=lambda b: b.conf[0])
-                class_id = int(box.cls[0])
-                class_label = f"{model.names[class_id]}"
-                confidence = box.conf[0]
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                detection_dict = {
-                    'class_id': class_id,
-                    'label': class_label,
-                    'confidence': confidence,
-                    'box': (x1, y1, x2, y2)
-                }
-                print(f"Detection found for partial description {candidate}: {detection_dict}")
-                full = True
-                break
-    
-    # Load model
-    # model = YOLOWorld("/home/ws/source/yolov8x-worldv2.pt")
-    # model.set_classes([obj])
-    # results = model.predict(os.path.join(IMG_DIR, f"{camera}_image_rgb.png"), conf=conf)
-    
-    # # Get, save, and show detection results
-    # if results and len(results[0].boxes) > 0:
-    #     detected = True
-    #     results[0].show()
-    #     img_array = results[0].plot()
-        
-    #     if save_block:
-    #         output_path = os.path.join(IMG_DIR, f"{camera}_yolo_detection.png")  
-    #         cv2.imwrite(output_path, img_array)
-             
-    #     if VIS_BLOCK:
-    #         cv2.imshow("Object Detection", img_array)
-    #         cv2.waitKey(0)
-    #         cv2.destroyAllWindows()
-        
-    #     # Save detections in dictionary
-    #     box = max(results[0].boxes[0], key=lambda b: b.conf[0]) # Box with highest confidence
-    #     class_id = int(box.cls[0])  # Class ID
-    #     class_label = f"{model.names[class_id]}" # Class label
-    #     confidence = box.conf[0]  # Confidence score
-    #     x1, y1, x2, y2 = map(int, box.xyxy[0])  # Bounding box coordinates
-    #     detection_dict={'class_id': class_id,
-    #                         'label': class_label,
-    #                         'confidence': confidence,
-    #                         'box': (x1, y1, x2, y2)}
-    #     print(f"Detection found: {detection_dict}")
-    
-    print(f"YOLO detected {obj}: {detected}")                       
-    return detected, detection_dict
+        cv2.imwrite(os.path.join(IMG_DIR, f"{camera}_yolo_detection.png"), img_array)
 
-def yolo_detect_object(obj: str, camera: str, conf: float=0.2, save_block: bool = False) -> tuple[bool, dict]:
+    return True, detection_dict
+
+def gemini_detect_object(obj: str, camera: str, save_block: bool = False) -> tuple[bool, dict]:
+    """
+    Run Gemini-based detection only.
+    """
+    image_path = os.path.join(IMG_DIR, f"{camera}_image_rgb.png")
+    if not os.path.exists(image_path):
+        return False, {}
+
+    try:
+        with open(image_path, "rb") as img_file:
+            img = Image.open(img_file)
+            with io.BytesIO() as jpeg_buffer:
+                img.convert("RGB").save(jpeg_buffer, format="JPEG", quality=85)
+                image_bytes = jpeg_buffer.getvalue()
+
+        output = gemini_predictor.detect_object_in_image(image_data=image_bytes, object_name=obj)
+        img = cv2.imread(image_path)
+        h, w = img.shape[:2]
+        detected, detection_dict = parse_detection_output(output, img_width=w, img_height=h)
+
+        if detected and save_block:
+            draw_and_save_detection(image_path, detection_dict,
+                                    os.path.join(IMG_DIR, f"{camera}_gemini_detection.png"))
+
+        return detected, detection_dict
+
+    except Exception as e:
+        print(f"Warning: Gemini detection error: {e}")
+        return False, {}
+
+def openai_detect_object(obj: str, camera: str, save_block: bool = False) -> tuple[bool, dict]:
+    """
+    Run OpenAI-based detection only.
+    """
+    image_path = os.path.join(IMG_DIR, f"{camera}_image_rgb.png")
+    if not os.path.exists(image_path):
+        return False, {}
+
+    try:
+        oai = openai_client.oai_client
+        output = openai_client.detect_object_in_image_openai(oai, img_path=image_path, object_name=obj, model_name="gpt-4o-mini")
+        img = cv2.imread(image_path)
+        h, w = img.shape[:2]
+        detected, detection_dict = parse_detection_output(output, img_width=w, img_height=h)
+
+        if detected and save_block:
+            draw_and_save_detection(image_path, detection_dict,
+                                    os.path.join(IMG_DIR, f"{camera}_openai_detection.png"))
+
+        return detected, detection_dict
+
+    except Exception as e:
+        print(f"Warning: OpenAI detection error: {e}")
+        return False, {}
+
+def yolo_detect_object(obj: str, camera: str, conf: float=0.25, save_block: bool = False, use_gemini: bool= True) -> tuple[bool, dict]:
     """
     Detect a specific object in an image using the YOLO-World model.
     This function loads the YOLO-World model, sets the class to detect, processes the image, and returns the detection results.
@@ -364,6 +473,43 @@ def yolo_detect_object(obj: str, camera: str, conf: float=0.2, save_block: bool 
     """
     detected = False
     detection_dict = {}
+    image_path = os.path.join(IMG_DIR, f"{camera}_image_rgb.png")
+    detected, detection_dict = yolo_world_detect_object(obj, camera, 0.5, save_block)
+    if not detected:
+        detected, detection_dict = owlv2_detect_object(obj, camera, conf, save_block)
+    if not detected:
+        print("YOLO World and OWL-ViT did not detect the object, trying Gemini...")        
+        detected, detection_dict = gemini_detect_object(obj, camera, save_block)
+    if not detected:
+        print("Gemini did not detect the object")
+            
+
+
+    vis = detection_visualizer.DetectionVisualizer()
+    #detection_dict_p = json.loads(detection_dict)  
+
+    vis.visualize(image_path, detections=[detection_dict])
+    vis.close()
+    
+    return detected, detection_dict
+
+def yolo_detect_object_old(obj: str, camera: str, conf: float=0.2, save_block: bool = False, use_gemini: bool= True) -> tuple[bool, dict]:
+    """
+    Detect a specific object in an image using the YOLO-World model.
+    This function loads the YOLO-World model, sets the class to detect, processes the image, and returns the detection results.
+
+    Args:
+        obj (str): Object to detect in the image
+        camera (str): Camera with which the image was taken
+        conf (float, optional): Confidence threshold. Defaults to 0.2.
+        save_block (bool, optional): Whether to save the image with detections. Defaults to False.
+
+    Returns:
+        tuple[bool, dict]: Tuple containing a boolean indicating if the object was detected and a dictionary with detection information.
+    """
+    detected = False
+    detection_dict = {}
+    image_path = os.path.join(IMG_DIR, f"{camera}_image_rgb.png")
     
     # Always try the full object name first, then try combos if not detected
     obj_words = obj.split()
@@ -377,10 +523,9 @@ def yolo_detect_object(obj: str, camera: str, conf: float=0.2, save_block: bool 
         combos = list(dict.fromkeys(combos))  # remove duplicates, preserve order
 
     # Try full object name first
-    model = YOLOWorld("/home/ws/source/yolov8x-worldv2.pt")
     print(f"Trying to detect {obj} with YOLO...")
-    model.set_classes([obj])
-    results = model.predict(os.path.join(IMG_DIR, f"{camera}_image_rgb.png"), conf=conf)
+    yolo_model.set_classes([obj])
+    results = yolo_model.predict(os.path.join(IMG_DIR, f"{camera}_image_rgb.png"), conf=0.5)
     if results and len(results[0].boxes) > 0:
         detected = True
         results[0].show()
@@ -394,7 +539,7 @@ def yolo_detect_object(obj: str, camera: str, conf: float=0.2, save_block: bool 
             cv2.destroyAllWindows()
         box = max(results[0].boxes[0], key=lambda b: b.conf[0])
         class_id = int(box.cls[0])
-        class_label = f"{model.names[class_id]}"
+        class_label = f"{yolo_model.names[class_id]}"
         confidence = box.conf[0]
         x1, y1, x2, y2 = map(int, box.xyxy[0])
         detection_dict = {
@@ -403,77 +548,74 @@ def yolo_detect_object(obj: str, camera: str, conf: float=0.2, save_block: bool 
             'confidence': confidence,
             'box': (x1, y1, x2, y2)
         }
-        print(f"Detection found for full description: {detection_dict}")
-    else:
-        # Try combos if full name not detected
-        print(f"Full description {obj} not detected, trying partial descriptions: {combos}")
-        for candidate in combos:
-            print(f"Trying to detect {candidate} with YOLO...")
-            model = YOLOWorld("/home/ws/source/yolov8x-worldv2.pt")
-            model.set_classes([candidate])
-            results = model.predict(os.path.join(IMG_DIR, f"{camera}_image_rgb.png"), conf=conf)
-            if results and len(results[0].boxes) > 0:
-                detected = True
-                results[0].show()
-                img_array = results[0].plot()
-                if save_block:
-                    output_path = os.path.join(IMG_DIR, f"{camera}_yolo_detection.png")
-                    cv2.imwrite(output_path, img_array)
-                if VIS_BLOCK:
-                    cv2.imshow("Object Detection", img_array)
-                    cv2.waitKey(0)
-                    cv2.destroyAllWindows()
-                box = max(results[0].boxes[0], key=lambda b: b.conf[0])
-                class_id = int(box.cls[0])
-                class_label = f"{model.names[class_id]}"
-                confidence = box.conf[0]
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                detection_dict = {
-                    'class_id': class_id,
-                    'label': class_label,
-                    'confidence': confidence,
-                    'box': (x1, y1, x2, y2)
-                }
-                print(f"Detection found for partial description {candidate}: {detection_dict}")
-                break
+        print(f"YOLO Detection found for full description: {detection_dict}")
     
-    # Load model
-    # model = YOLOWorld("/home/ws/source/yolov8x-worldv2.pt")
-    # model.set_classes([obj])
-    # results = model.predict(os.path.join(IMG_DIR, f"{camera}_image_rgb.png"), conf=conf)
+    if not detected:
+        print("YOLO World did not detect the object, trying OWL-ViT...")
+        detected, detection_dict = owlv2_detect_object(obj, camera, conf=conf, save_block=save_block)
     
-    # # Get, save, and show detection results
-    # if results and len(results[0].boxes) > 0:
-    #     detected = True
-    #     results[0].show()
-    #     img_array = results[0].plot()
-        
-    #     if save_block:
-    #         output_path = os.path.join(IMG_DIR, f"{camera}_yolo_detection.png")  
-    #         cv2.imwrite(output_path, img_array)
-             
-    #     if VIS_BLOCK:
-    #         cv2.imshow("Object Detection", img_array)
-    #         cv2.waitKey(0)
-    #         cv2.destroyAllWindows()
-        
-    #     # Save detections in dictionary
-    #     box = max(results[0].boxes[0], key=lambda b: b.conf[0]) # Box with highest confidence
-    #     class_id = int(box.cls[0])  # Class ID
-    #     class_label = f"{model.names[class_id]}" # Class label
-    #     confidence = box.conf[0]  # Confidence score
-    #     x1, y1, x2, y2 = map(int, box.xyxy[0])  # Bounding box coordinates
-    #     detection_dict={'class_id': class_id,
-    #                         'label': class_label,
-    #                         'confidence': confidence,
-    #                         'box': (x1, y1, x2, y2)}
-    #     print(f"Detection found: {detection_dict}")
+    if not detected:
+        print("OWL-ViT did not detect the object, trying Gemini or OpenAI...")
+        image_path = os.path.join(IMG_DIR, f"{camera}_image_rgb.png")
+        if os.path.exists(image_path):
+            if use_gemini:
+                print("Using gemini for object detection")
+                try:
+                    with open(image_path, "rb") as img_file:
+                        img = Image.open(img_file)
+                        with io.BytesIO() as jpeg_buffer:
+                            img.convert("RGB").save(jpeg_buffer, format="JPEG", quality=85)
+                            image_bytes = jpeg_buffer.getvalue()
+                            if not image_bytes:
+                                detected = False
+                                detection_dict = {}
+                            
+                            output = gemini_predictor.detect_object_in_image(image_data=image_bytes, object_name=obj)
+                            img = cv2.imread(image_path)
+                            h, w = img.shape[:2]
+                            detected, detection_dict = parse_detection_output(output, img_width=w, img_height=h)
+                            if detected:
+                                draw_and_save_detection(image_path, detection_dict, os.path.join(IMG_DIR, f"{camera}_gemini_detection.png")  )
+                except:
+                    print(f"Warning: Detect Object with Gemini led to some exception")
+                    detected = False
+                    detection_dict = {}
+            else:
+                print("Using open ai for object detection")
+                try:
+                    oai = openai_client.oai_client
+                    output = openai_client.detect_object_in_image_openai(oai, img_path=image_path, object_name=obj)
+                    print(output)
+                    img = cv2.imread(image_path)
+                    h, w = img.shape[:2]
+                    detected, detection_dict = parse_detection_output(output, img_width=w, img_height=h)
+                    if detected:
+                        draw_and_save_detection(image_path, detection_dict, os.path.join(IMG_DIR, f"{camera}_openai_detection.png")  )
+                    
+                except Exception as e:
+                    print(f"Warning: Detect Object with OpenAI client led to some exception {e}")
+                    detected = False
+                    detection_dict = {}
+
+        else:
+            print(f"Warning: Image file not found at {image_path}. Skipping image check.")
+            image_bytes = None
+            detected = False
+            detection_dict = {}
+            
+    if detected:
+        start_vis_time = time.time()
+        vis = detection_visualizer.DetectionVisualizer()
+        #detection_dict_p = json.loads(detection_dict)  
+
+        vis.visualize(image_path, detections=[detection_dict])
+        vis.close()
+        print(f"YOLO Visualization time: {time.time() - start_vis_time:.2f}s")
     
-    print(f"YOLO detected {obj}: {detected}")                       
     return detected, detection_dict
+    
 
-
-def sam_detect_object(camera: str, x: int, y: int, i: int) -> tuple[np.array, np.array, np.array]:
+def sam_detect_object(camera: str, x: int, y: int, i: int, input_box: dict = None) -> tuple[np.array, np.array, np.array]:
     """
     Detect and segment an object in an image using the Segment Anything Model (SAM).
     This function loads the SAM model, processes the image, and returns the mask, score, and logits of the detected object.
@@ -486,50 +628,49 @@ def sam_detect_object(camera: str, x: int, y: int, i: int) -> tuple[np.array, np
     Returns:
         tuple[np.array, np.array, np.array]: Tuple containing the mask, score, and logits of the detected object.
     """
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
-    if device.type == "cuda":
-        torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
-        if torch.cuda.get_device_properties(0).major >= 8:
-            torch.backends.cuda.matmul.allow_tf32 = True
-            torch.backends.cudnn.allow_tf32 = True
-
-    # Load model and image
-    sam2_checkpoint = "/home/ws/source/sam2/checkpoints/sam2.1_hiera_large.pt"
-    model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-    predictor = SAM2ImagePredictor(build_sam2(model_cfg, sam2_checkpoint, device=device))
-    image = Image.open(os.path.join(IMG_DIR, f"{camera}_image_rgb.png"))
-    predictor.set_image(image)
     
+    image = Image.open(os.path.join(IMG_DIR, f"{camera}_image_rgb.png"))
+    start_time = time.time()
+    sam2_predictor.set_image(image)
+    
+    if input_box is not None:
+        input_box_np = np.array(input_box["box"])
+        input_label = np.array([1])
+        pred = sam2_predictor.predict(point_coords=None, point_labels=input_label, box=input_box_np[None,:], multimask_output=False)
+        
+    else:
     # Get mask, score, and logits of the detected object
-    input_point = np.array([[x, y]])
-    input_label = np.array([1])
-    masks, scores, logits = predictor.predict(point_coords=input_point, point_labels=input_label, multimask_output=False)
+        input_point = np.array([[x, y]])
+        input_label = np.array([1])
+        pred = sam2_predictor.predict(point_coords=input_point, point_labels=input_label, multimask_output=False)
+    
+    print(f"SAM2 segmentation time: {time.time() - start_time:.2f}s")
+    masks, scores, logits = pred
     sorted_ind = np.argsort(scores)[::-1]
     masks = masks[sorted_ind]
     scores = scores[sorted_ind]
     logits = logits[sorted_ind]
+    
+    save_masks(i, image, masks, scores, input_box=input_box_np, input_labels=input_label, borders=True)
+    start_vis_time = time.time()
+    vis = detection_visualizer.DetectionVisualizer()
+    image_path = os.path.join(IMG_DIR, f"{camera}_image_rgb.png")
+    vis.visualize(image_path, detections = [input_box],  masks = [masks[0]], scores=[scores[0]])
+    vis.close()
+    print(f"SAM2 Visualization time: {time.time() - start_vis_time:.2f}s")
+    return masks[0], scores[0], logits[0]
 
     #if VIS_BLOCK:
         #show_masks(image, masks, scores, point_coords=input_point, input_labels=input_label, borders=True)
         
-    save_masks(i, image, masks, scores, point_coords=input_point, input_labels=input_label, borders=True)
+    # save_masks(i, image, masks, scores, point_coords=input_point, input_labels=input_label, borders=True)
     
-    return masks[0], scores[0], logits[0]
+    # return masks[0], scores[0], logits[0]
 
 def sam_random_detect(camera: str, i: int, num_points: int = 10) -> list[dict]:
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
-
-    sam2_checkpoint = "/home/ws/source/sam2/checkpoints/sam2.1_hiera_large.pt"
-    model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-    predictor = SAM2ImagePredictor(build_sam2(model_cfg, sam2_checkpoint, device=device))
+    
     image = Image.open(os.path.join(IMG_DIR, f"{camera}_image_rgb.png")).convert("RGB")
-    predictor.set_image(image)
+    sam2_predictor.set_image(image)
     w, h = image.size
 
     results = []
@@ -537,7 +678,7 @@ def sam_random_detect(camera: str, i: int, num_points: int = 10) -> list[dict]:
         x, y = np.random.randint(0, w), np.random.randint(0, h)
         input_point = np.array([[x, y]])
         input_label = np.array([1])
-        masks, scores, logits = predictor.predict(
+        masks, scores, logits = sam2_predictor.predict(
             point_coords=input_point,
             point_labels=input_label,
             multimask_output=False
@@ -842,8 +983,9 @@ def detect_door_handle(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img
     """
     # Get predictions from drawer detection model
     predictions = door_predict(rgb_img, config, input_format="rgb", vis_block=False)
+    print("================== DOOR HANDLE DETECTION ==================")
+    print("Drawer-door detections:", predictions)
     matches = drawer_handle_matches(predictions)
-    print("############## TEST PRINTS ##############")
     test_prints(matches, rgb_img)
     # Filter matches
     filtered_matches = [m for m in matches if (m.handle is not None and m.drawer is not None)]
@@ -922,7 +1064,8 @@ def detect_door_handle(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img
 
     return handle_pose_map, open_dir, hinge_pose_map
 
-def test_prints(matches, rgb_img, save_path="handle_door_match_5.png"):
+
+def test_prints(matches, rgb_img, save_path="handle_door_match_current.png"):
     if not matches:
         print("No matches found.")
         return None
@@ -969,45 +1112,55 @@ def test_prints(matches, rgb_img, save_path="handle_door_match_5.png"):
     cv2.putText(vis, drawer_label, (dxmin, max(0, dymin - 10)),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
 
-    cv2.imwrite(save_path, vis)
-    print(f"Visualization saved to {save_path}")
+    IMG_DIR = config.get_subpath("images")
+    vis_path = os.path.join(IMG_DIR, "handle_door_match_current.png")
+    cv2.imwrite(vis_path, vis)
+    print(f"Visualization saved to {vis_path}")
 
-
+# def save_head_rgb_image():
+#     rclpy.init()
+#     node = rclpy.create_node('save_head_rgb_image')
+#     bridge = CvBridge()
+#     msg = rclpy.task.spin_until_future_complete(
+#         node,
+#         rclpy.task.Future(lambda: None),
+#         lambda: node.create_subscription(RosImage, '/camera/color/image_raw', lambda m: setattr(node, 'img_msg', m), 1)
+#     )
+#     # Wait for image
+#     while not hasattr(node, 'img_msg'):
+#         rclpy.spin_once(node)
+#     img_msg = node.img_msg
+#     cv_img = bridge.imgmsg_to_cv2(img_msg, desired_encoding='bgr8')
+#     cv2.imwrite(os.path.join(IMG_DIR, "head_aligned_rgb.png"), cv_img)
+#     node.destroy_node()
+#     rclpy.shutdown()
 def main() -> None:
-    # def save_head_rgb_image():
-    #     rclpy.init()
-    #     node = rclpy.create_node('save_head_rgb_image')
-    #     bridge = CvBridge()
-    #     msg = rclpy.task.spin_until_future_complete(
-    #         node,
-    #         rclpy.task.Future(lambda: None),
-    #         lambda: node.create_subscription(RosImage, '/camera/color/image_raw', lambda m: setattr(node, 'img_msg', m), 1)
-    #     )
-    #     # Wait for image
-    #     while not hasattr(node, 'img_msg'):
-    #         rclpy.spin_once(node)
-    #     img_msg = node.img_msg
-    #     cv_img = bridge.imgmsg_to_cv2(img_msg, desired_encoding='bgr8')
-    #     cv2.imwrite(os.path.join(IMG_DIR, "head_aligned_rgb.png"), cv_img)
-    #     node.destroy_node()
-    #     rclpy.shutdown()
+    rclpy.init()
 
-    # save_head_rgb_image()
-    #detected, dict = yolo_detect_object("purple folder", "head")
-    detected = False
-    if detected == False:
-        oai = openai_client.oai_client
-        #result = openai_client.check_image_response_for_object(oai, os.path.join(IMG_DIR, "head_image_rgb.png"), "purple folder")
-        result = "yes, the first word is yes"
-        if result and isinstance(result, str) and result.strip().lower().startswith("yes"):
-            print("The first word is 'yes'.")
-            sam_results = sam_random_detect("head", 0, num_points=50)
-            top_clip_results = select_with_clip(sam_results, "pringles", image_path = os.path.join(IMG_DIR, "head_image_rgb.png"), top_k=10, VIS_BLOCK=True, img_dir=IMG_DIR)
-        else:
-            print("The first word is not 'yes'.")
-    else:    
-        x1, y1, x2, y2 = map(int, dict["box"])
-        _, _, _ = sam_detect_object("head", (x1+x2)/2, (y1+y2)/2, 0)
+    camera = "phone"
+
+    # save_head_rgb_image() kitchen tissue roll
+    #detected, dict = owlv2_detect_object("binder", camera, save_block=True)
+    detected, dict = yolo_detect_object("bathroom cleaner", camera)
+    if detected:
+        _, _, _ = sam_detect_object(camera, 0, 0, 0, input_box=dict)
+    
+    # detected = False
+    # if detected == False:
+    #     oai = openai_client.oai_client
+    #     #result = openai_client.check_image_response_for_object(oai, os.path.join(IMG_DIR, "head_image_rgb.png"), "purple folder")
+    #     result = "yes, the first word is yes"
+    #     if result and isinstance(result, str) and result.strip().lower().startswith("yes"):
+    #         print("The first word is 'yes'.")
+    #         sam_results = sam_random_detect("head", 0, num_points=50)
+    #         top_clip_results = select_with_clip(sam_results, "pringles", image_path = os.path.join(IMG_DIR, "head_image_rgb.png"), top_k=10, VIS_BLOCK=True, img_dir=IMG_DIR)
+    #     else:
+    #         print("The first word is not 'yes'.")
+    # else:    
+    #     x1, y1, x2, y2 = map(int, dict["box"])
+        # _, _, _ = sam_detect_object("head", (x1+x2)/2, (y1+y2)/2, 0)
+    
+    
     
 
 if __name__ == "__main__":

@@ -5,11 +5,25 @@ import base64
 import json
 import os
 from utils.recursive_config import Config
+from typing import Optional
 import time
+from PIL import Image
+import io
+
 config = Config()
 
 oai_client = OpenAI(api_key=set_key(config, "openai"))
-
+def encode_image_as_jpeg(img_path: str, quality: int = 85) -> str:
+    """Load an image (any format), convert to JPEG in memory, return base64 string."""
+    try:
+        with Image.open(img_path) as img:
+            with io.BytesIO() as buffer:
+                img.convert("RGB").save(buffer, format="JPEG", quality=quality)
+                return base64.b64encode(buffer.getvalue()).decode("utf-8")
+    except:
+        print("Exception in loading image")
+        return None
+        
 def encode_image(img_path):
     with open(img_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode('utf-8')
@@ -57,7 +71,7 @@ def extend_json(client: OpenAI, json_path: str, write_path: str) -> None:
     print(response.choices[0].message.content)
     save_json(write_path, response.choices[0].message.content)
 
-def ask_for_shelf_with_room_json(client: OpenAI, json_path: str, object_name: str, object_not_found_location: str="", model_name: str="gpt-4o-mini") -> None:
+def ask_for_shelf_with_room_json(client: OpenAI, json_path: str, object_name: str, object_not_found_location: str="trash can", model_name: str="gpt-4o-mini") -> None:
     json_string = load_json(json_path)
     # system_msg = "The user will give you 2 things. \
     #               1. A json containing a list of furniture (label, center position, dimensions) in the environment, clustered into rooms by an llm. \
@@ -69,7 +83,7 @@ def ask_for_shelf_with_room_json(client: OpenAI, json_path: str, object_name: st
     "You will be given: "
     "1) a JSON with furniture (id, label, centroid, dimensions, room), "
     "2) an object name. "
-    "Task: predict the 3 most likely furniture for the object. "
+    "Task: predict the 3 most likely furniture for the object based on semantic relations and how an average person would place objects. "
     "For each prediction, include id as a str, label, room, probability, and a short spatial only relation like on top of, inside. "
     "Return ONLY a valid JSON in this format:\n"
     "{\n"
@@ -283,6 +297,48 @@ def ask_for_shelf_with_image(client: OpenAI, img_path: str) -> None:
     print(response.choices[0].message.content)
     return response.choices[0].message.content
 
+def check_image_response_for_object(client: OpenAI, img_path: str, object_name: str, model_name: str= "") -> None:
+    base64_image = encode_image(img_path)
+    system_msg = (
+        "You will be given an image of a shelf or cabinet. or a table or kitchen counter "
+        "The user will ask about a specific object, including its attributes (e.g., color, type). "
+        "Carefully check if the object exists in the image, paying attention to the attributes. "
+        "If the object is present, confirm its existence and describe its location and relevant attributes (e.g., color, label). "
+        "If the object is not present or the attributes do not match, clearly state that it is not found."
+        # "If object is found, give me the bounding box as well in format [x1, y1, x2, y2] where (x1, y1) is the top-left corner and (x2, y2) is the bottom-right corner of the box. EXTREMELY IMPORTANT: Do NOT hallucinate a box if the object is not found or if you cannot estimate it."
+        "If you can then reliably estimate the approximate location (top left, top right, bottom left, bottom right, center) and size i.e. small, medium, large in the image."
+    )
+    user_msg = f"Is there a '{object_name}' in the image? Pay attention to attributes like color or type (e.g., blue bottle, mustard bottle, ketchup bottle). Begin first word of answer with yes or no."
+
+    response = client.chat.completions.create(
+        model=model_name if model_name else "gpt-4o-mini",
+        messages=[
+            {
+                "role": "system",
+                "content": system_msg,
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{base64_image}",
+                            "detail": "low",
+                        },
+                    },
+                    {
+                        "type": "text",
+                        "text": user_msg,
+                    },
+                ],
+            },
+        ],
+        max_tokens=500,
+    )
+    print(response.choices[0].message.content)
+    return response.choices[0].message.content
+
 def ask_for_shelf_content(client: OpenAI, img_path: str) -> None:
     base64_image1 = encode_image(os.path.join(img_path, "navigation_image.png"))
     system_msg = "The user will give you an fisheye image of a shelf or cabinet. Have a close look at it. Describe how many compartments, doors, and drawers it has. \
@@ -320,7 +376,78 @@ def ask_for_shelf_content(client: OpenAI, img_path: str) -> None:
     print(response.choices[0].message.content)
 
 
-    
+def detect_object_in_image_openai(
+    client: OpenAI,
+    img_path: str,
+    object_name: str,
+    model_name: str = "gpt-4.1"
+) -> Optional[dict]:
+    """
+    Ask an OpenAI vision model to detect an object in an image and return JSON with bounding box.
+    Optimized prompt for OpenAI models.
+    """
+    try:
+        system_instruction = (
+            "You are an object detection assistant. "
+            "Your only task is to check whether a requested object is present in an image, "
+            "and if present, return its bounding box. "
+            "Output must always follow the JSON schema provided. "
+            "Never invent new labels: the label must exactly match the requested object."
+        )
+
+        # Few-shot example included inside the prompt
+        prompt = (
+            f"Task: Detect the object '{object_name}' in the given image.\n"
+            "Rules:\n"
+            "- If found, set detected=true and output one bounding box only (the most confident one).\n"
+            "- If not found, set detected=false and detection_dict={}.\n"
+            "- Coordinates must be normalized integers from 0 to 1000, "
+            "ordered as [y_min, x_min, y_max, x_max], with top-left as origin.\n"
+            "- Confidence should be a float between 0.0 and 1.0.\n"
+            "- Label must always be exactly the requested object name.\n\n"
+            "Example output:\n"
+            "{\n"
+            '  "detected": true,\n'
+            '  "detection_dict": {\n'
+            f'    "label": "{object_name}",\n'
+            '    "confidence": 0.92,\n'
+            '    "box": [120, 300, 420, 600]\n'
+            "  }\n"
+            "}\n"
+        )
+
+        # base64 encode image
+        b64_image = encode_image_as_jpeg(img_path=img_path)
+        if b64_image is None:
+            return None
+        print("Starting open ai request")
+        start_time = time.time()
+        response = client.chat.completions.create(
+            model=model_name,
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}},
+                    ],
+                },
+            ],
+            response_format={"type": "json_object"},
+        )
+        end_time = time.time()
+
+        raw_text = response.choices[0].message.content
+        print(f"Time taken: {end_time - start_time:.2f} sec")
+        print(f"Raw response:\n{raw_text}")
+
+        return json.loads(raw_text)
+
+    except Exception as e:
+        print(f"Error: {e}")
+        return None
+
 
 def main(config: Config):
     client = OpenAI(api_key=set_key(config, "openai"))
@@ -351,6 +478,16 @@ def main(config: Config):
     # print(rooms)
     #new_json = extend_json(client, json_path, write_path)
     
+def test_image_existence(config: Config):
+    ending = config["pre_scanned_graphs"]["high_res"]
+    client = OpenAI(api_key=set_key(config, "openai"))
+    img_path = os.path.join(config.get_subpath("images"), "head_image_rgb.png")
+    object_name = "pringles chips can"
+    result = check_image_response_for_object(client, img_path, object_name, "gpt-4o-mini")
+    print(result)
 
 if __name__ == "__main__":
-    main(Config())
+    test_image_existence(Config())
+    client = OpenAI(api_key=set_key(config, "openai"))
+    img_path = os.path.join(config.get_subpath("images"), "head_image_rgb.png")
+    output = detect_object_in_image_openai(client, img_path, "kitchen tissue roll")

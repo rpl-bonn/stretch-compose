@@ -126,9 +126,12 @@ def preprocess_scan(scan_dir, drawer_detection=False):
         
         with open(scan_dir + "/predictions_drawers.txt", 'a') as file:
             file.writelines(drawer_lines)
-    
+
     if not os.path.exists(scan_dir + "/aruco_pose.npy"):
+        print("Creating path for aruco pose", scan_dir + "/aruco_pose.npy")
+
         T_ipad = pose_ipad_pointcloud(scan_dir)
+        print("Transformation from iPad Pointcloud")
         np.save(scan_dir + "/aruco_pose.npy", T_ipad)
 
 if __name__ == "__main__":

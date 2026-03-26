@@ -6,6 +6,10 @@ __pycache__/
 # C extensions
 *.so
 
+# Images
+Funakt3D/
+*.png
+
 # Distribution / packaging
 .Python
 build/
@@ -166,3 +170,36 @@ cython_debug/
 /.environment/
 /configs/user.yaml
 /.environment.yaml
+
+/data_yasmin/
+/data_yasmin/*
+*.pt 
+*.pth
+*.ckpt
+*.pdf
+*.gv
+
+
+install/
+log/
+ros2_ws/funmap_bag/
+*.db3
+*.zip
+screenshot_*.png
+/-r
+/os
+/PY
+
+source/tmp/
+*.npy
+*.ts
+
+# external repos
+Mask3D/
+ros2_ws/src/gpd/
+ros2_ws/src/gpd_ros2/
+ros2_ws/src/stretch_ros2/
+source/Mask3D/
+source/gpd/
+source/sam2/
+source/sam3/

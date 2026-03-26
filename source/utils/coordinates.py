@@ -315,6 +315,8 @@ class Pose3D(Pose):
         """
         Convert from Pose3D to Pose2D or Pose3D.
         """
+        print(f"Converting from Pose3D to Pose{dimension}D.")
+        print(f"Current coordinates: {self.coordinates[:2]}")
         if dimension == 2:
             coordinates = self.coordinates[:2]
             _, _, yaw = Rotation.from_matrix(self.rot_matrix).as_euler("xyz")

@@ -134,7 +134,7 @@ def ask_for_rooms_with_scene_json(client: OpenAI, json_path: str) -> None:
     json_string = load_json(json_path)
     system_msg = "The user will give you 1 thing. \
                   A json containing furniture (label, center position, dimensions) in the environment. \
-                  1. Cluster the furniture from the json into 3 clusters using not just k-means on the x-y-center-coordinates, but also furniture labels. A room or location can contain 1 or multiple pieces of furniture. \
+                  1. Cluster the furniture from the json into 2 clusters using not just k-means on the x-y-center-coordinates, but also furniture labels. A room or location can contain 1 or multiple pieces of furniture. \
                   2. In each cluster, give room_name, and list all furniture as members with id, use id as the key with each id have the label from scene.json, its centroid and dimensions. \
                   3. Return the result in json format (all lowercase)"
     user_msg = "Ensure rooms are named realistically for a household setting, so that it can help future llm queries for semantic search locations."
@@ -321,29 +321,29 @@ def main(config: Config):
     client = OpenAI(api_key=set_key(config, "openai"))
     ending = config["pre_scanned_graphs"]["high_res"]
     
-    json_path = os.path.join(config.get_subpath("scene_graph"), ending, "rooms.json")
+    json_path = os.path.join(config.get_subpath("scene_graph"), ending, "scene.json")
     print(json_path)
     img_path = os.path.join(config.get_subpath("images"), ending)
     write_path = os.path.join(config.get_subpath("scene_graph"), ending, "description_scene_graph.json")
     location_path = os.path.join(config.get_subpath("scene_graph"), ending,  "shelf_locations.json")
     #ask_for_shelf_with_image(client, img_path)
     #ask_for_shelf_content(client, img_path)
-    #rooms = ask_for_rooms_with_scene_json(client, json_path)
-    #rooms_json_path = os.path.join(config.get_subpath("scene_graph"), ending, "rooms_2.json")
-    object_name = "teddy bear"
-    start_time = time.time()
-    object_location = ask_for_shelf_with_room_json(client, json_path, object_name=object_name, model_name ="gpt-4o-mini")
-    end_time = time.time()
+    rooms = ask_for_rooms_with_scene_json(client, json_path)
+    rooms_json_path = os.path.join(config.get_subpath("scene_graph"), ending, "rooms.json")
+    # object_name = "teddy bear"
+    # start_time = time.time()
+    # object_location = ask_for_shelf_with_room_json(client, json_path, object_name=object_name, model_name ="gpt-4o-mini")
+    # end_time = time.time()
     
-    object_location_json_path = os.path.join(config.get_subpath("scene_graph"), ending, "locations", f"{object_name}.json")
+    # object_location_json_path = os.path.join(config.get_subpath("scene_graph"), ending, "locations", f"{object_name}.json")
     
-    with open(object_location_json_path, 'w') as f:
-        json.dump(object_location, f, indent=4)
-    print(f"Time taken with i/o operations: {end_time - start_time} seconds")
-    print(object_location)
-    # with open(rooms_json_path, 'w') as f:
-    #     json.dump(rooms, f, indent=4)
-    # print(rooms)
+    # with open(object_location_json_path, 'w') as f:
+    #     json.dump(object_location, f, indent=4)
+    # print(f"Time taken with i/o operations: {end_time - start_time} seconds")
+    # print(object_location)
+    with open(rooms_json_path, 'w') as f:
+        json.dump(rooms, f, indent=4)
+    print(rooms)
     #new_json = extend_json(client, json_path, write_path)
     
 

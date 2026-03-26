@@ -191,4 +191,6 @@ data/
 To create the scene graph, first run the Mask3D container once. Afterwards, start the YOLO Drawer docker and run the `scenegraph_preprocessing.py` in the `source/scripts/preprocessing_scripts` folder. This will also save the scene graph to different JSON files.
 
 ## Pipeline Execution
+1. You need 4 terminals. Use ssh to login into the hello-robot.  
+2. After the initial checks, first launch 'ros2 launch stretch_core stretch_full_bringup.launch.py'
 To run a robot task, launch `stretch_funmap mapping` with the generated map and `stretch_core d405_basic` on the robot. Then, start your desired task execution script from the `source/scripts/my_robot_scripts` folder on the workstation.

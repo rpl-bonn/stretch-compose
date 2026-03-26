@@ -1,0 +1,10 @@
+{
+  "greeting": "Hello, I am Stretch. I can either help you pick something or open a drawer. Choose the task on the user interface shown.",
+  "demo_grasp": "You want me to find and pick {object}",
+  "demo_drawer": "You want me to open drawer {drawer_id}",
+  "demo_door_not_impl": "At this time, I cannot open doors. You can choose one of the smaller drawers",
+  "searching": "I am searching for {object} in {location}.",
+  "ask_help": "I have never seen this {object}, so I need to ask my all-knowing supreme overlord for likely locations.",
+  "not_found": "I did not find {object} in {location}. Going to next location {location_next}.",
+  "found": "I found {object} in {location}."
+}

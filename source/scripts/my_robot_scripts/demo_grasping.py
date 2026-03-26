@@ -31,10 +31,11 @@ from utils.open_vocab_graph_search import OpenVocabSearch
 from utils.llm_utils import openai_client
 
 # Adaptable
-VIS_BLOCK = False
-SAVE_BLOCK = True
-NO_PROPOSALS = 3
-OBJECT = "blue bottle"
+# Defaults
+VIS_BLOCK_DEFAULT = False
+SAVE_BLOCK_DEFAULT = True
+NO_PROPOSALS_DEFAULT = 3
+OBJECT = "bottle"
 
 # Config and Paths
 config = Config()
@@ -71,7 +72,7 @@ class TransformManager:
         self.node.get_logger().info("TransformListener stopped.")
 
     
-def execute_search(OBJECT: str) -> bool:
+def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: bool=SAVE_BLOCK_DEFAULT) -> bool:
     """
     Search for queried object in open space locations.
 
@@ -114,9 +115,14 @@ def execute_search(OBJECT: str) -> bool:
             print(f"{OBJECT} is in the scene graph. Searching for it in/on {furniture} at {target_pos}")
 
             move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
-            get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
-            get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
-            detected, detection_dict = yolo_detect_object(OBJECT, "head", save_block=SAVE_BLOCK)
+            get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
+            get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
+            detected, detection_dict = yolo_detect_object(OBJECT, "head", save_block=save_block)
+            if detected == False:
+                print(f"Failed to detect {OBJECT} in/on {furniture} despite being in the scene graph.")
+                oai = openai_client.oai_client
+                img_path = os.path.join(IMG_DIR, f"camera_image_rgb.png")
+                result = openai_client.check_image_response_for_object(oai, room_json_path, OBJECT, "gpt-4o-mini")
             
         else:     
             # Check if location proposals already exist for the object
@@ -137,26 +143,26 @@ def execute_search(OBJECT: str) -> bool:
             else:
                 candidate_found_with_high_probability = False
                 print(f"{OBJECT} is NOT in the current scene graph. Switching to open vocabulary grasp search with clip and openmask3d")
-                # ovs = OpenVocabSearch()
-                print("Skipping open vocabulary search for now.")
+                ovs = OpenVocabSearch()
+                #print("Skipping open vocabulary search for now.")
                 
-                # candidate_found, likely_furniture_id, likely_furniture_label, mask_sim, text_sim = ovs.search(OBJECT, no_proposals=NO_PROPOSALS)
+                candidate_found, likely_furniture_id, likely_furniture_label, mask_sim, text_sim = ovs.search(OBJECT, no_proposals=NO_PROPOSALS)
                 
-                # if candidate_found:
-                #     probability = ovs.compute_probability(mask_sim, text_sim, 0.4)
+                if candidate_found:
+                    probability = ovs.compute_probability(mask_sim, text_sim, 0.4)
                     
-                # if candidate_found and probability > 0.4:
-                #     print(f"Searching for {OBJECT} in/on {likely_furniture_label} (id: {likely_furniture_id}) with combined probability {probability:.3f}.")
-                #     result = ovs.result_to_json(OBJECT, likely_furniture_id, likely_furniture_label, probability, "unknown", object_location_json_path)
-                #     target_pos, furniture, front_normal, body_pose, furniture_id  = searchnet_planning.plan_furniture_search(OBJECT, 0)
-                #     checked_furniture_ids.append(furniture_id)
-                #     print(f"{OBJECT} is in the scene graph. Searching for it in/on {furniture} at {target_pos}")
-                #     candidate_found_with_high_probability = True
+                if candidate_found and probability > 0.4:
+                    print(f"Searching for {OBJECT} in/on {likely_furniture_label} (id: {likely_furniture_id}) with combined probability {probability:.3f}.")
+                    result = ovs.result_to_json(OBJECT, likely_furniture_id, likely_furniture_label, probability, "unknown", object_location_json_path)
+                    target_pos, furniture, front_normal, body_pose, furniture_id  = searchnet_planning.plan_furniture_search(OBJECT, 0)
+                    checked_furniture_ids.append(furniture_id)
+                    print(f"{OBJECT} is in the scene graph. Searching for it in/on {furniture} at {target_pos}")
+                    candidate_found_with_high_probability = True
 
-                #     move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
-                #     get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
-                #     get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
-                #     detected, detection_dict = yolo_detect_object(OBJECT, "head", save_block=SAVE_BLOCK)
+                    move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
+                    get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
+                    get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
+                    detected, detection_dict = yolo_detect_object(OBJECT, "head", save_block=save_block)
                 
                
         
@@ -165,7 +171,7 @@ def execute_search(OBJECT: str) -> bool:
             # Check for object at the different locations proposed by DeepSeek
             print(f"No suitable furniture found for {OBJECT} with high enough probability. Asking openai for likely locations.")
             oai = openai_client.oai_client
-            result = openai_client.ask_for_shelf_with_room_json(oai, room_json_path, OBJECT, "end table near door", "gpt-4o-mini")
+            result = openai_client.ask_for_shelf_with_room_json(oai, room_json_path, OBJECT, "trash can", "gpt-4o-mini")
 
             filename = f"{OBJECT.replace(' ', '_')}.json"
             object_location_json_path_llm_filename = os.path.join(object_location_json_path, filename)
@@ -185,9 +191,9 @@ def execute_search(OBJECT: str) -> bool:
                 print(f"Searching for {OBJECT} in/on {furniture} ({target_pos}).")
                 
                 move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
-                get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
-                get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
-                detected, detection_dict = yolo_detect_object(OBJECT, "head", save_block=SAVE_BLOCK)
+                get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
+                get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
+                detected, detection_dict = yolo_detect_object(OBJECT, "head", save_block=save_block)
                 if detected:
                     print(f"Found {OBJECT} in/on {furniture}: {detection_dict}")
                     break

@@ -11,6 +11,10 @@
             "IMAGE_SUFFIX": "-desktop-full"
         }
     },
+    // Add this to prevent auto-injection of features  AI SLOP- prevents devcontainer to add stuff which breaks our code s it runs before our stuff
+    "features": {},
+    "overrideFeatureInstallOrder": [],
+
     "workspaceFolder": "/home/ws",
     "workspaceMount": "source=${localWorkspaceFolder},target=/home/ws,type=bind",
     "customizations": {
@@ -37,16 +41,22 @@
     },
     "runArgs": [
         "--net=host",
-        "-e", "DISPLAY=${env:DISPLAY}",
+        "-e", "DISPLAY=${localEnv:DISPLAY}",
         "--gpus", "all",
         "-e", "NVIDIA_DRIVER_CAPABILITIES=all",
-        "-e", "NVIDIA_VISIBLE_DEVICES=all"
+        "-e", "NVIDIA_VISIBLE_DEVICES=all",
+        "--device", "/dev/snd", 
+        "-e", "PULSE_SERVER=unix:${localEnv:XDG_RUNTIME_DIR}/pulse/native",
+        "-v", "${localEnv:XDG_RUNTIME_DIR}/pulse/native:${localEnv:XDG_RUNTIME_DIR}/pulse/native",
+        "-v", "${localEnv:HOME}/.config/pulse/cookie:/root/.config/pulse/cookie",
+        "-e", "XDG_RUNTIME_DIR=${localEnv:XDG_RUNTIME_DIR}",
+        "-e", "XAUTHORITY=${localEnv:XAUTHORITY}"
     ],
     "mounts": [
         "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind,consistency=cached",
         "source=/dev/dri,target=/dev/dri,type=bind,consistency=cached",
-        "source=/home/stretch/.ssh,target=/home/stretch/.ssh,type=bind",
-        "source=${env:HOME}/.Xauthority,target=/home/stretch/.Xauthority,type=bind"
+        "source=${localEnv:HOME}/.ssh,target=/home/stretch/.ssh,type=bind",
+        "source=${localEnv:HOME}/.Xauthority,target=${localEnv:HOME}/.Xauthority,type=bind"
     ],
     "initializeCommand": "sh ./.devcontainer/initialize.sh",
     "postCreateCommand": "sh ./.devcontainer/postCreate.sh"

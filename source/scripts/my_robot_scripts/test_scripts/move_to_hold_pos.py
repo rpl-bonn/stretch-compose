@@ -18,7 +18,7 @@ from stretch_package.stretch_movement.move_to_pose import JointPoseController
 from stretch_package.stretch_movement.move_to_position import JointPositionController
 from stretch_package.stretch_movement.stow_arm import StowArmController
 from stretch_package.stretch_state.frame_transformer import FrameTransformer
-from utils.coordinates import Pose3D
+from utils.coordinates import Pose2D, Pose3D, from_a_to_b_distanced, pose_distanced, get_door_opening_poses
 from utils.recursive_config import Config
 from utils.robot_utils.advanced_movement import *
 from utils.robot_utils.basic_movement import *
@@ -56,94 +56,24 @@ def move_to_hold():
     
     sleep_time=1
     
-    pos_1 = {'joint_lift': 0.8878 }# lift up
-    pos_2= {'joint_wrist_yaw': 1.6726} # rotate wrist
-    pos_3 = {'joint_wrist_pitch': 0.14419 } # pitch
-    pos_4 = {'joint_wrist_roll': 0.1012427} # roll
-    # base_pos1 = [-0.657583, 0.2139812, 0.0, 0.0, 0.6529537, -0.68856] #-0.988440 #ODOM
-    # base_pos2 = [-0.505939, -0.401639, 0.0, 0.0, 0.62322607, -0.7820417] #x,y,ox,oy,oz,ow #ODOM
+    base_pos1 = [-0.954, -1.119, 0.0, 0.0, 0.28, -0.74896684]
+
+    body_pose = np.array([-0.66751, -0.45766, -0.45])
+    target_pose = np.array([-0.66751, -1.1577, 0.66751])
     
-    base_pos1 = [-0.59845065, -0.10691489, 0.0, 0.0, -0.66260747, -0.74896684]
-    base_pos2 = [-0.31139448, -0.37196776, 0.0, 0.0, -0.46807966, 0.88368627]
-    
-    # base_2_2 = [-1.8829288, 0.2242938, 0.0, 0.0, 0.2604572, 0.96548537] #0.11944 #ODOM
-    base_2_2 = [-1.877843, -0.2832533, 0.0, 0.0, 0.35309235, 0.93558847]
-    
-    base_test = [-0.7591308, -0.1421398, 0.0, 0.0, -0.0312526, 1.0]
-    
-    
-    # base_pos1 = [0.0, 0.0, 0.0, 0.0, 0.0] #x,y,ox,oy,oz
-    # base_pos1 = [-0.7524076, 0.0242843, 0.0, 0.0, 0.725177116] #x,y,ox,oy,oz,ow
-    # base_pos1 = [-0.7524076, 0.0242843, 0.0, 0.0, 0.725177116, -0.68856]
-    # base_pos1_2 = [-0.7524076, 0.0242843, 0.0, 0.0, 0.625548, -0.780185]
-    # base_pos1 = [-0.89760294, 0.0242843, 0.0, 0.0, 0.9998246] #x,y,ox,oy,oz
-    # base_pos1 = [-0.7959, 0.0442, 0.0, 0.0, 0.720] #x,y,ox,oy,oz
-    
-     #x,y,ox,oy,oz
-    
-    base_home = [0.00522, 0.05242, 0.0, 0.0, -0.00062, 0.9999] #0.11944
-    
+    pose = Pose3D(body_pose)
+    pose.set_rot_from_direction(target_pose - body_pose)
+
     try:
-        # print("Moving to home position...")
-        # move_body_test(base_node, base_home)
-        # print("BASE MOVED")
-        # turn_body_test(joint_pose_node, base_home)
-        # print("BASE TURNED")
-        
         print("Moving to look position...")
-        move_body_test(base_node, base_test)
+        
+        move_body_test(base_node, base_pos1)
         print("BASE MOVED")
-        turn_body_test(joint_pose_node, base_test)
+        
+        turn_body_test(joint_pose_node, base_pos1)
         print("BASE TURNED")
-        # move_body_test(base_node, base_test)
-        # print("BASE MOVED")
-        time.sleep(sleep_time + 2)
         
-        # print("Moving to look position...")
-        # move_body_test(base_node, base_pos1)
-        # print("BASE MOVED")
-        # turn_body_test(joint_pose_node, base_pos1)
-        # print("BASE TURNED")
-        # time.sleep(sleep_time + 2)
-        
-        # joint_pose_node.send_joint_pose(pos_1)
-        # spin_until_complete(joint_pose_node)
-        # print("Executed Pose 1")
-        # time.sleep(sleep_time)
-
-        # joint_pose_node.send_joint_pose(pos_2)
-        # spin_until_complete(joint_pose_node)
-        # print("Executed Pose 2")
-        # time.sleep(sleep_time)
-
-        # joint_pose_node.send_joint_pose(pos_3)
-        # spin_until_complete(joint_pose_node)
-        # print("Executed Pose 3")
-        # time.sleep(sleep_time)
-
-        # joint_pose_node.send_joint_pose(pos_4)
-        # spin_until_complete(joint_pose_node)
-        # print("Executed Pose 4")
-        # time.sleep(sleep_time)
-
-        # print("Get handle pose...")
-        # get_handle_pose(transform_manager, stow_node, base_node, joint_pose_node)
-        # print("Get handle pose... DONE")
-        # time.sleep(sleep_time)
-        
-        # print("Moving to hold position...")
-        # move_body_test(base_node, base_pos2)
-        # print("BASE MOVED")
-        # turn_body_test(joint_pose_node, base_pos2)
-        # print("BASE TURNED")
-        
-        # print("Moving to hold position...")
-        # move_body_test(base_node, base_2_2)
-        # print("BASE MOVED")
-        # turn_body_test(joint_pose_node, base_2_2)
-        # print("BASE TURNED")
-        
-        
+        time.sleep(sleep_time)
         
         print("Pose sequence completed.")
         

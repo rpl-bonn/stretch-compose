@@ -3,7 +3,7 @@ import sys
 import time
 
 # Add source directory to Python path
-sys.path.append('/home/ws/source')
+sys.path.append('/home/ws/')
 
 from utils.preprocessing_utils import full_merge
 from utils.preprocessing_utils import full_align

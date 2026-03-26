@@ -136,9 +136,11 @@ def pull_drawer(pose_node: JointPoseController):
     """
     # Open gripper and move arm towards drawer handle
     set_gripper(pose_node, 0.4)
-    pull_pose_start = {'wrist_extension': (0.5, 40.0)}
+    pull_pose_start = {'wrist_extension': (0.55, 85.0)}
     pose_node.send_joint_pose(pull_pose_start)
     spin_until_complete(pose_node)
+    print("Reached pull start pose")
+    time.sleep(3.0)
     # Close gripper to grab handle and pull drawer
     set_gripper(pose_node, -0.01)
     pull_pose_end = {'wrist_extension': 0.05}
@@ -162,7 +164,7 @@ def push(pose_node: JointPoseController, height: float) -> None:
     pose_node.send_joint_pose(push_pose)
     spin_until_complete(pose_node)
     # Push drawer
-    push_pose = {'wrist_extension': (0.49, 50.0)}
+    push_pose = {'wrist_extension': (0.49, 85.0)}
     pose_node.send_joint_pose(push_pose)
     spin_until_complete(pose_node)
     time.sleep(1.0)
@@ -170,8 +172,9 @@ def push(pose_node: JointPoseController, height: float) -> None:
     push_pose = {'wrist_extension': 0.1}
     pose_node.send_joint_pose(push_pose)
     spin_until_complete(pose_node)
+    time.sleep(1.0)
 
-def pull_door(pose_node: JointPoseController):
+def open_door(pose_node: JointPoseController):
     """
     Exectue a pulling motion (e.g. for drawers).
     This function moves the arm in front of the drawer handle, opens the gripper, moves the arm to the handle, closes the gripper,
@@ -185,17 +188,34 @@ def pull_door(pose_node: JointPoseController):
     Returns:
         Pose3D: end pose of the gripper after pulling
     """
-    # Open gripper and move arm towards door handle
-    set_gripper(pose_node, 0.4)
-    pull_pose_start = {'wrist_extension': (0.5, 40.0)}
-    pose_node.send_joint_pose(pull_pose_start)
+    # set_gripper(pose_node, 0.4)
+    open_pose_start = {'wrist_extension': 0.25, 'joint_wrist_yaw': 0.3}
+    pose_node.send_joint_pose(open_pose_start)
     spin_until_complete(pose_node)
-    # Close gripper to grab handle and pull door
-    set_gripper(pose_node, -0.01)
-    # pull_pose_end = {'wrist_extension': 0.05}
-    # pose_node.send_joint_pose(pull_pose_end)
-    # spin_until_complete(pose_node)
-    # time.sleep(2.0)
+    time.sleep(1.0)
+    open_pose_start = { 'joint_wrist_yaw': 0.1}
+    pose_node.send_joint_pose(open_pose_start)
+    spin_until_complete(pose_node)
+    time.sleep(1.0)
+    open_pose_start = {'wrist_extension': 0.01}
+    pose_node.send_joint_pose(open_pose_start)
+    spin_until_complete(pose_node)
+    time.sleep(1.0)
+    open_pose_start = {'joint_wrist_yaw': 0.5}
+    pose_node.send_joint_pose(open_pose_start)
+    spin_until_complete(pose_node)
+    time.sleep(1.0)
+    open_pose_start = {'wrist_extension': 0.001}
+    pose_node.send_joint_pose(open_pose_start)
+    spin_until_complete(pose_node)
+    time.sleep(1.0)
+    open_pose_start = {'wrist_extension': 0.001}
+    pose_node.send_joint_pose(open_pose_start)
+    spin_until_complete(pose_node)
+    time.sleep(1.0)
+    open_pose_end = {'joint_wrist_yaw': 1.13, 'joint_wrist_pitch': -1.4}
+    pose_node.send_joint_pose(open_pose_end)
+    spin_until_complete(pose_node)
     
     
 def adapt_body(best_pose: Pose3D, best_grasp: Pose3D) -> Pose3D:
@@ -237,8 +257,8 @@ def adapt_grasp(tf_node: FrameTransformer, grasp_pose: np.ndarray, min_height: f
         tf_in_base[:3, :3] = R
     rotation = tf_in_base[:3, :3].copy()
     euler_angles = Rotation.from_matrix(rotation).as_euler('xyz', degrees=True)
-    if 0 < euler_angles[2] < 180:  # if yaw angle is between 0 and 180 degrees, mirror it
-        euler_angles[2] = -euler_angles[2]
+    # if 0 < euler_angles[2] < 180:  # if yaw angle is between 0 and 180 degrees, mirror it
+    #     euler_angles[2] = -euler_angles[2]
     # TODO: check if roll is upside down, mirror it
     rotation = Rotation.from_euler('xyz', euler_angles, degrees=True).as_matrix()
     tf_in_base[:3, :3] = rotation.copy()
@@ -336,7 +356,7 @@ def find_new_grasp_dynamically(
     pcd_env,
 ) -> None:
     """
-    Adaptive grasp based on collecting a new point cloud close to the supposed grasp position allowing it to adjust for
+    Adaptive grasp based on collecting a new point cloeud close to the supposed grasp position allowing it to adjust for
     some drift in localization. This method specifically creates a new point cloud at the supposed position, calculates
     the transformation from original PCD to the new dynamically collected PCD, and transforms the grasp accordingly.
     :param hello_robot: StretchClient robot controller
@@ -398,6 +418,48 @@ def look_into_drawer(pose_node: JointPoseController, handle_pose: Pose3D):
     pose_node.send_joint_pose(gripper_pose)
     spin_until_complete(pose_node)
     
+def look_into_door(pose_node: JointPoseController, handle_pose: Pose3D):
+    """
+    Move the arm into a position above the drawer to look into it.
+    This function moves the arm to a position above the drawer, with a z-offset of 0.3m and a wrist pitch of -45 degrees.
+
+    Args:
+        pose_node (JointPoseController): ROS2 node to move arm into a certain pose
+        handle_pose (Pose3D): 3D position of drawer handle
+    """
+    height = handle_pose.coordinates[2]
+    gripper_pose = {'wrist_extension': 0.05 , 'gripper_aperture': 1.0}
+    pose_node.send_joint_pose(gripper_pose)
+    spin_until_complete(pose_node)
+    gripper_pose = {'joint_lift': height, 'wrist_extension': 0.5 , 'joint_wrist_pitch': -np.pi/6, 'joint_wrist_roll': 0.0}
+    pose_node.send_joint_pose(gripper_pose)
+    spin_until_complete(pose_node)
+    
+def arm_move_back(pose_node: JointPoseController, wrist: float = 0.05,gripper: float = 1.0, pitch: float = 0.0, roll: float = 0.0):
+    """
+    Move the arm into a position above the drawer to look into it.
+    This function moves the arm to a position above the drawer, with a z-offset of 0.3m and a wrist pitch of -45 degrees.
+
+    Args:
+        pose_node (JointPoseController): ROS2 node to move arm into a certain pose
+        handle_pose (Pose3D): 3D position of drawer handle
+    """
+    gripper_pose = {'wrist_extension': wrist , 'gripper_aperture': gripper, 'joint_wrist_pitch': pitch, 'joint_wrist_roll': roll}
+    pose_node.send_joint_pose(gripper_pose)
+    spin_until_complete(pose_node)
+    
+def look_for_door(pose_node: JointPoseController, wrist: float = 0.15):
+    """
+    Move the arm into a position above the drawer to look into it.
+    This function moves the arm to a position above the drawer, with a z-offset of 0.3m and a wrist pitch of -45 degrees.
+
+    Args:
+        pose_node (JointPoseController): ROS2 node to move arm into a certain pose
+        handle_pose (Pose3D): 3D position of drawer handle
+    """
+    gripper_pose = {'wrist_extension': wrist}
+    pose_node.send_joint_pose(gripper_pose)
+    spin_until_complete(pose_node)
     
 def move_in_front_of(
     stow_node: StowArmController, base_node: BaseController, head_node: HeadJointController, pose_node: JointPoseController, 
@@ -423,8 +485,12 @@ def move_in_front_of(
         grasp (bool, optional): Whether the robot wants to grasp an object. Defaults to False.
     """
     if stow:
+        print('#######################################')
         stow_arm(stow_node)
+        print('#######################################')
     move_body(base_node, body_pose.to_dimension(2))
+    print("NOW TURNING")
+    print(f"Target center: {target_center.as_ndarray()}")
     turn_body(pose_node, target_center.to_dimension(2), grasp=grasp)
     if grasp:
         look_ahead(pose_node)
@@ -433,8 +499,92 @@ def move_in_front_of(
         time.sleep(2)
         move_head(head_node, target_center, tilt_bool=True)
         time.sleep(1)
-    
         
+
+def move_in_side_of(
+    stow_node: StowArmController, base_node: BaseController, head_node: HeadJointController, pose_node: JointPoseController, 
+    body_pose: Pose3D, target_center: Pose3D, yaw: float, pitch: float, roll: float, lift: float, stow: bool = True, grasp: bool = False, small: bool = False
+) -> None:
+    
+    if stow:
+        stow_arm(stow_node)
+    move_body(base_node, body_pose.to_dimension(2))
+    print("NOW TURNING")
+    print(f"Target center: {target_center.as_ndarray()}")
+    turn_body(pose_node, target_center.to_dimension(2), grasp=grasp, small=small)
+    
+    if grasp:
+        look_ahead(pose_node)
+        unstow_arm(pose_node, target_center, yaw=yaw, pitch=pitch, roll=roll, lift=lift)
+    else:
+        time.sleep(2)
+        move_head(head_node, target_center, tilt_bool=True)
+        time.sleep(1)
+    
+# def grasp_single_point(
+#     pos_node: JointPositionController,
+#     pose_node: JointPoseController,
+#     tf_node: FrameTransformer,
+#     body_pose: Pose3D,
+#     grasp_point_cam: np.ndarray,   # (x, y, z) in camera frame
+#     distance_start: float,
+#     distance_end: float,
+# ):
+#     """
+#     Execute a grasp at a single 3D point, transformed into the robot's world frame.
+#     """
+
+#     # Transform grasp point into the world frame
+#     grasp_point_world = tf_node.transform_point(
+#         grasp_point_cam, 
+#         source_frame="camera_link", 
+#         target_frame="odom"
+#     )
+
+#     # Define orientation (top-down as example)
+#     z_axis = np.array([0, 0, -1])  # approach
+#     x_axis = np.array([1, 0, 0])   # gripper jaws
+#     y_axis = np.cross(z_axis, x_axis)
+
+#     R = np.column_stack([x_axis, y_axis, z_axis])  # rotation matrix
+
+#     # Build grasp pose in world frame
+#     final_grasp_world = Pose3D(grasp_point_world, R)
+
+#     # If you need it relative to the body_pose
+#     final_grasp_robot = body_pose.inverse() @ final_grasp_world
+
+#     try:
+#         positional_grab(pos_node, pose_node, final_grasp_robot, distance_start, distance_end, width=0.05)
+#     except Exception as e:
+#         print(f"Error: Failed grabbing object. {e}")
+
+def grasp_single_point(
+    pos_node: JointPositionController,
+    pose_node: JointPoseController,
+    grasp_point: np.ndarray,   # (x, y, z) in odom frame
+    distance_start: float,
+    distance_end: float,
+):
+    """
+    Execute a grasp at a single 3D point (already in odom frame).
+    """
+
+    # Pick a simple fixed orientation: top-down grasp
+    z_axis = np.array([0, 0, -1])  # approach direction
+    x_axis = np.array([1, 0, 0])   # gripper jaw axis
+    y_axis = np.cross(z_axis, x_axis)
+
+    R = np.column_stack([x_axis, y_axis, z_axis])  # 3x3 rotation matrix
+
+    final_grasp = Pose3D(grasp_point, R)
+
+    try:
+        positional_grab(pos_node, pose_node, final_grasp, distance_start, distance_end, width=0.05)
+    except Exception as e:
+        print(f"Error: Failed grabbing object. {e}")
+
+
 def drive_home(base_node: BaseController, pose_node: JointPoseController, stow_node: StowArmController,):
     stow_arm(stow_node)
     move_body(base_node, Pose2D(np.array([0.0, 0.0])))

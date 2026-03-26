@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Stretch Robot GUI</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg:#0f172a; --fg:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --card:#111827; --border:#1f2937; }
+    *{box-sizing:border-box}
+    body{
+      margin:0; padding:24px;
+      font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;
+      background:var(--bg); color:var(--fg);
+      display:flex; flex-direction:column; align-items:center; gap:12px;
+    }
+    h1{margin:0 0 6px 0; font-size:32px; letter-spacing:.3px}
+    .status{font-size:14px; color:var(--muted)}
+    .container{width:min(1100px,96vw); background:transparent;}
+    .hidden{display:none}
+
+    /* cards */
+    .grid2{display:grid; grid-template-columns:repeat(2,minmax(240px,1fr)); gap:22px; align-items:stretch}
+    .card{
+      border:1px solid var(--border); border-radius:18px; padding:26px;
+      background:linear-gradient(180deg,#0b1220,#0a0f1a);
+      display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px;
+      cursor:pointer; transition:transform .1s ease, border-color .2s ease, box-shadow .2s ease;
+    }
+    .card:hover{transform:translateY(-2px); border-color:#334155; box-shadow:0 12px 40px rgba(0,0,0,.35)}
+    .hint{font-size:14px; color:#b8c1d1}
+
+    /* welcome pill */
+    .welcome-wrap{
+      display:flex; justify-content:center; margin-top:20px;
+      position:relative; z-index:10; /* <-- ensures it’s above anything else */
+    }
+    .welcome-btn{
+      width:min(60%,680px); padding:16px 24px; border:none; border-radius:999px;
+      background:var(--accent); color:#0b1220; font-weight:700; font-size:18px; cursor:pointer;
+      box-shadow:0 6px 28px rgba(0,0,0,.35);
+    }
+
+    /* panels / shelf */
+    .panel{
+      background:var(--card); border:1px solid var(--border); border-radius:16px; padding:20px;
+      position:relative; /* <-- establishes stacking context */
+    }
+    .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+    .btn{
+      display:inline-flex; align-items:center; justify-content:center; gap:10px;
+      padding:12px 16px; border-radius:12px; cursor:pointer; border:1px solid var(--border);
+      background:#0b1220; color:var(--fg); text-decoration:none;
+      transition:transform .08s ease, border-color .2s ease, box-shadow .2s ease;
+    }
+    .btn:hover{border-color:#334155; box-shadow:0 4px 20px rgba(0,0,0,.3)}
+    .shelf-wrapper{display:flex; justify-content:center; align-items:center; margin:0 auto;}
+    .shelf{
+      position:relative; width:800px; max-width:100%; aspect-ratio:800/640;
+      background:url('kallax.png') no-repeat center/cover;
+      border:1px solid var(--border); border-radius:12px; overflow:hidden;
+    }
+    .drawer{position:absolute; cursor:pointer; outline:none; border-radius:6px}
+    .drawer:hover{border:2px solid var(--accent); background:rgba(56,189,248,.18)}
+    .flash{animation:flash .8s ease}
+    @keyframes flash {0%{box-shadow:0 0 0 0 rgba(56,189,248,.9)} 100%{box-shadow:0 0 0 16px rgba(56,189,248,0)}}
+
+    /* grasp page */
+    .gallery{display:grid; grid-template-columns:repeat(3,minmax(220px,1fr)); gap:18px;}
+    .tile{ border:2px solid var(--border); border-radius:16px; overflow:hidden; background:#0b1220; cursor:pointer;
+      transition:transform .08s ease, border-color .2s ease, box-shadow .2s ease; }
+    .tile:hover{transform:translateY(-1px); border-color:#334155; box-shadow:0 12px 36px rgba(0,0,0,.35)}
+    .tile img{width:100%; aspect-ratio:1/1; object-fit:cover; display:block}
+    .tile .cap{padding:10px 12px; font-size:15px; color:#cbd5e1; text-align:center; border-top:1px solid var(--border)}
+    .tile.selected{border-color:var(--accent); box-shadow:0 0 0 3px rgba(56,189,248,.35) inset;}
+    .grasp-status{margin-top:10px; color:#cbd5e1; font-weight:600}
+    .input{flex:1 1 380px; min-width:260px; padding:12px 14px; border-radius:12px; border:1px solid var(--border); background:#0b1220; color:var(--fg);}
+  </style>
+</head>
+<body>
+  <h1>Stretch Robot GUI</h1>
+  <div class="status" id="status">Server offline</div>
+
+  <!-- HOME -->
+  <div class="container" id="view-home">
+    <div class="panel">
+      <div class="grid2">
+        <!-- Drawer card -->
+        <div class="card" onclick="showView('drawer')" title="Open a drawer">
+          <svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><path d="M3 10h18"/><path d="M3 16h18"/>
+          </svg>
+          <div class="hint">Open a drawer</div>
+        </div>
+        <!-- Object card -->
+        <div class="card" onclick="showView('grasp')" title="Find an object">
+          <svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <div class="hint">Find an object</div>
+        </div>
+      </div>
+
+      <!-- Centered Welcome button (now guaranteed clickable) -->
+      <div class="welcome-wrap">
+        <button id="welcomeBtn" class="welcome-btn">Welcome</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- DRAWER VIEW -->
+  <div class="container hidden" id="view-drawer">
+    <div class="row" style="margin-bottom:12px;">
+      <button class="btn" onclick="showView('home')">← Home</button>
+      <div class="hint">Click a compartment to open it</div>
+    </div>
+    <div class="panel">
+      <div class="shelf-wrapper">
+        <div class="shelf" id="shelf">
+          <!-- Clickable drawers -->
+          <div class="drawer" data-id="13" style="top:36.4%; left:11.625%; width:17.125%; height:10.15%;"></div>
+          <div class="drawer" data-id="15" style="top:46.9%; left:11.625%; width:17.125%; height:10.3%;"></div>
+          <div class="drawer" data-id="19" style="top:58.75%; left:49.0%; width:17.625%; height:11.25%;"></div>
+          <div class="drawer" data-id="14" style="top:70.3%; left:49.0%; width:17.625%; height:10.47%;"></div>
+        </div>
+      </div>
+      <div class="hint" id="drawerStatus" style="margin-top:10px;">No drawer opened yet</div>
+    </div>
+  </div>
+
+  <!-- GRASP VIEW -->
+  <div class="container hidden" id="view-grasp">
+    <div class="row" style="margin-bottom:12px;">
+      <button class="btn" onclick="showView('home')">← Home</button>
+      <div class="hint">Click a quick-pick object, or type anything and press Run.</div>
+    </div>
+
+    <div class="panel">
+      <!-- input row (keeps Release button in the same place) -->
+      <div class="row" style="gap:10px; margin-bottom:12px; flex-wrap:wrap;">
+        <input id="objectInput" class="input" type="text" placeholder="e.g., water bottle, ketchup bottle, cup, pringles" />
+        <button class="btn" id="runBtn">Run</button>
+        <button class="btn" id="releaseBtn" title="Open gripper & release">Release gripper</button>
+      </div>
+
+      <!-- quick pick tiles -->
+      <div id="gallery" class="gallery"></div>
+
+      <div id="graspStatus" class="grasp-status"></div>
+    </div>
+  </div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const views = { home: el('view-home'), drawer: el('view-drawer'), grasp: el('view-grasp') };
+    const SERVER = "http://127.0.0.1:5007";
+
+    function showView(name){
+      Object.values(views).forEach(v=>v.classList.add('hidden'));
+      views[name].classList.remove('hidden');
+      if(name==='drawer') el('drawerStatus').textContent='No drawer opened yet';
+      if(name==='grasp')  el('graspStatus').textContent='';
+    }
+
+    function setStatus(text){ statusEl.textContent = text; }
+    function checkStatus(){
+      fetch(SERVER + '/status').then(r=>r.json())
+        .then(d => setStatus(d.running ? 'Robot is busy…' : 'Idle'))
+        .catch(()=> setStatus('Server offline'));
+    }
+    setInterval(checkStatus, 2000); checkStatus();
+
+    /* ---------- Drawer interactions ---------- */
+    const shelf = el('shelf'), drawerStatus = el('drawerStatus');
+    const DRAWER_MAP = { "13":"left_white_drawer_upper","15":"left_white_drawer_lower","19":"right_black_drawer_upper","14":"right_black_drawer_lower" };
+    const fName = s => s.replace(/_/g,' ').split(' ').map(w=>w[0].toUpperCase()+w.slice(1)).join(' ');
+    shelf?.querySelectorAll('.drawer').forEach(rect=>{
+      rect.addEventListener('click', ()=>{
+        shelf.querySelectorAll('.drawer').forEach(x=>x.classList.remove('flash'));
+        rect.classList.add('flash');
+        const id = rect.getAttribute('data-id');
+        drawerStatus.textContent = 'Opening: ' + fName(DRAWER_MAP[id] || id);
+        fetch(SERVER + '/run', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({id}) })
+          .then(r=>{ if(r.status===409) drawerStatus.textContent='Robot is busy…'; return r.json(); })
+          .then(()=> checkStatus())
+          .catch(console.error);
+      });
+    });
+
+    /* ---------- Grasp interactions ---------- */
+    const IMAGES = [
+      { id:'watering_can', label:'Watering Can', src:'watering can.jpg', aliases:['watering can','can','watering'] },
+      { id:'cup', label:'Cup', src:'cup.jpg', aliases:['cup','mug'] },
+      { id:'water_bottle', label:'Water Bottle', src:'water bottle.jpg', aliases:['water bottle','bottle'] },
+      { id:'milk_carton', label:'Milk Carton', src:'milk carton.jpg', aliases:['milk','milk carton','carton'] },
+      { id:'pringles', label:'Pringles', src:'pringles.jpg', aliases:['pringles','chips','snacks'] },
+      { id:'tennis_ball', label:'Tennis Ball', src:'tennis ball.jpg', aliases:['tennis ball','ball'] },
+    ];
+
+    // build gallery
+    const gallery = el('gallery');
+    IMAGES.forEach(item=>{
+      const card = document.createElement('button');
+      card.className='tile'; card.type='button'; card.setAttribute('aria-label', item.label);
+      card.innerHTML = `<img src="${item.src}" alt="${item.label}" loading="lazy"><div class="cap">${item.label}</div>`;
+      card.addEventListener('click', ()=>{
+        document.querySelectorAll('.tile').forEach(t=>t.classList.remove('selected'));
+        card.classList.add('selected');
+        el('graspStatus').textContent = 'Grasping: ' + item.label;
+        fetch(SERVER + '/grasp', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({object:item.id}) })
+          .then(r=>{ if(r.status===409) el('graspStatus').textContent='Robot is busy…'; return r.json(); })
+          .then(()=> checkStatus())
+          .catch(console.error);
+      });
+      gallery.appendChild(card);
+    });
+
+    // unified Run (input → map or raw)
+    const inputEl = el('objectInput');
+    const norm = s => (s||'').toLowerCase().trim().replace(/\s+/g,' ');
+    function findObjectByInput(input){
+      const q = norm(input); if(!q) return null;
+      for(const item of IMAGES){ if(item.aliases.some(a => norm(a) === q)) return item; }
+      for(const item of IMAGES){ if(item.aliases.some(a => norm(a).startsWith(q))) return item; }
+      for(const item of IMAGES){ if(item.aliases.some(a => norm(a).includes(q))) return item; }
+      return null;
+    }
+    function runGrasp(){
+      const txt = inputEl.value.trim();
+      if(!txt){ el('graspStatus').textContent = 'Type an object name first.'; return; }
+      const item = findObjectByInput(txt);
+      if(item){
+        document.querySelectorAll('.tile').forEach(t=>t.classList.remove('selected'));
+        const tile = Array.from(document.querySelectorAll('#gallery .tile')).find(t => t.querySelector('.cap')?.textContent === item.label);
+        if(tile){ tile.classList.add('selected'); tile.scrollIntoView({behavior:'smooth', block:'center'}); }
+        el('graspStatus').textContent = 'Grasping: ' + item.label;
+        fetch(SERVER + '/grasp', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({object:item.id}) })
+          .then(r=>{ if(r.status===409) el('graspStatus').textContent='Robot is busy…'; return r.json(); })
+          .then(()=> checkStatus())
+          .catch(console.error);
+      } else {
+        el('graspStatus').textContent = 'Grasping (free-text): ' + txt;
+        fetch(SERVER + '/grasp', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({object:txt, raw:true}) })
+          .then(r=>{ if(r.status===409) el('graspStatus').textContent='Robot is busy…'; return r.json(); })
+          .then(()=> checkStatus())
+          .catch(console.error);
+      }
+    }
+    el('runBtn').addEventListener('click', runGrasp);
+    inputEl.addEventListener('keydown', e=>{ if(e.key==='Enter'){ e.preventDefault(); runGrasp(); } });
+
+    // release gripper
+    el('releaseBtn').addEventListener('click', ()=>{
+      el('graspStatus').textContent = 'Releasing gripper…';
+      fetch(SERVER + '/release', { method:'POST' })
+        .then(r=>{ if(r.status===409) el('graspStatus').textContent='Robot is busy…'; return r.json(); })
+        .then(()=> checkStatus())
+        .catch(console.error);
+    });
+
+    // welcome audio — bind by JS to ensure handler exists
+    document.getElementById('welcomeBtn').addEventListener('click', ()=>{
+      fetch(SERVER + '/audio', { method:'POST' })
+        .then(r=>r.json())
+        .catch(console.error);
+    });
+
+    function el(id){ return document.getElementById(id); }
+    showView('home');
+  </script>
+</body>
+</html>

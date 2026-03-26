@@ -17,9 +17,78 @@ pre_scanned_graphs:
   base_fiducial_id: 101
   graph_frame_name_prefix: "filtered_fiducial_"
   floor: -0.1
-  low_res: "2025_08_21"
-  high_res: "2025_08_21"
-  masked: "2025_08_21"
+
+  # low_res: "2025_10_17"
+  # high_res: "2025_10_17"
+  # masked: "2025_10_17"
+
+  # low_res: "2025_09_12"
+  # high_res: "2025_09_12"
+  # masked: "2025_09_12"
+
+  # low_res: "2025_09_15"
+  # high_res: "2025_09_15"
+  # masked: "2025_09_15"
+
+  # low_res: "2025_11_20"
+  # high_res: "2025_11_20"
+  # masked: "2025_11_20"
+
+  # low_res: "2025_11_25"
+  # high_res: "2025_11_25"
+  # masked: "2025_11_25"
+
+  # low_res: "2025_11_27"
+  # high_res: "2025_11_27"
+  # masked: "2025_11_27"
+
+  # low_res: "2025_12_12"
+  # high_res: "2025_12_12"
+  # masked: "2025_12_12"
+
+  # low_res: "2026_01_16"
+  # high_res: "2026_01_16"
+  # masked: "2026_01_16"
+
+  # low_res: "2026_01_22"
+  # high_res: "2026_01_22"
+  # masked: "2026_01_22"
+  
+  # low_res: "2026_02_20"
+  # high_res: "2026_02_20"
+  # masked: "2026_02_20"
+
+  # low_res: "2026_02_24"  # Old
+  # high_res: "2026_02_24"
+  # masked: "2026_02_24"
+
+  # low_res: "2026_02_25" # Old
+  # high_res: "2026_02_25"
+  # masked: "2026_02_25"
+
+  # low_res: "2026_03_03"
+  # high_res: "2026_03_03"
+  # masked: "2026_03_03"
+
+  # low_res: "2026_03_13_Gokul"
+  # high_res: "2026_03_13_Gokul"
+  # masked: "2026_03_13_Gokul"
+
+  # low_res: "2026_03_13_test"
+  # high_res: "2026_03_13_test"
+  # masked: "2026_03_13_test"
+
+  # low_res: "2026_03_18"
+  # high_res: "2026_03_18"
+  # masked: "2026_03_18"
+
+  # low_res: "2026_03_19"
+  # high_res: "2026_03_19"
+  # masked: "2026_03_19"
+
+  low_res: "2026_03_26"
+  high_res: "2026_03_26"
+  masked: "2026_03_26"
 
 # paths are relative from project_root_directory
 subpaths:

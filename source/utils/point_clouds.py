@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from typing import Optional
 import cv2
 import numpy as np
 import open3d as o3d
@@ -16,7 +17,7 @@ from utils.coordinates import Pose3D, get_circle_points, get_arc_view_poses
 from utils.importer import PointCloud
 from utils.mask3D_interface import get_coordinates_from_item
 from utils import recursive_config
-from utils.robot_utils.basic_movement import move_arm
+from utils.robot_utils.basic_movement import move_arm, get_odom
 from utils.robot_utils.basic_perception import get_depth_picture, get_rgb_picture
 from utils.time import convert_time
 from utils.zero_shot_object_detection import get_cloud_from_gripper_detection, yolo_detect_object, sam_detect_object
@@ -336,12 +337,127 @@ def body_planning_front(
             sphere.paint_uniform_color(color)
             drawable_geometries.append(sphere)
         o3d.visualization.draw_geometries(drawable_geometries)
-
+    print(f"Selected coordinates: {selected_coordinates}")
     pose = Pose3D(selected_coordinates)
+    
     pose.set_rot_from_direction(target - selected_coordinates)
     end_time = time.time_ns()
     minutes, seconds = convert_time(end_time - start_time)
     print(f"\nBody planning RUNTIME: {minutes}min {seconds}s\n")
+    return pose
+
+def body_planning_front_modified(
+    env_cloud: PointCloud,
+    target: np.ndarray,
+    furniture_normal: np.ndarray,
+    floor_height_thresh: float = 0,
+    body_height: float = 0.45,
+    min_target_distance: float = 0.75,
+    max_target_distance: float = 1.0,
+    min_obstacle_distance: float = 0.5,
+    n: int = 6,
+    vis_block: bool = False
+) -> Pose3D:
+    """
+    Plans a frontal position for the robot by sampling ONLY along the
+    furniture front normal direction.
+    """
+
+    # --------------------------------------------------
+    # 1. Remove floor points
+    # --------------------------------------------------
+    points = np.asarray(env_cloud.points)
+    mask = points[:, 2] > floor_height_thresh
+    pc_no_ground = env_cloud.select_by_index(np.where(mask)[0])
+
+    # --------------------------------------------------
+    # 2. Create mesh + SDF scene
+    # --------------------------------------------------
+    pc_no_ground = pc_no_ground.voxel_down_sample(voxel_size=0.02)
+    pc_no_ground.estimate_normals(
+        search_param=o3d.geometry.KDTreeSearchParamHybrid(
+            radius=0.05, max_nn=30
+        )
+    )
+
+    mesh, _ = o3d.geometry.TriangleMesh.create_from_point_cloud_poisson(
+        pc_no_ground, depth=6
+    )
+
+    mesh_t = o3d.t.geometry.TriangleMesh.from_legacy(mesh)
+    scene = o3d.t.geometry.RaycastingScene()
+    scene.add_triangles(mesh_t)
+
+    # --------------------------------------------------
+    # 3. Normalize furniture normal
+    # --------------------------------------------------
+    furniture_normal = furniture_normal / np.linalg.norm(furniture_normal)
+
+    # --------------------------------------------------
+    # 4. Generate candidate points ONLY along normal
+    # --------------------------------------------------
+    distances = np.linspace(min_target_distance, max_target_distance, n)
+
+    candidate_points = []
+    for d in distances:
+        p = target + furniture_normal * d
+        p[2] = body_height
+        candidate_points.append(p)
+
+    candidate_points = np.array(candidate_points)
+
+    # --------------------------------------------------
+    # 5. Check direct visibility (raycast)
+    # --------------------------------------------------
+    ray_dirs = candidate_points - target
+    ray_starts = np.tile(target, (len(ray_dirs), 1))
+    rays = np.concatenate([ray_starts, ray_dirs], axis=1)
+
+    rays_tensor = o3d.core.Tensor(rays, dtype=o3d.core.Dtype.Float32)
+    response = scene.cast_rays(rays_tensor)
+
+    visible_mask = response["t_hit"].numpy() > 1
+    candidate_points = candidate_points[visible_mask]
+
+    if len(candidate_points) == 0:
+        raise RuntimeError("No collision-free frontal positions (visibility check failed).")
+
+    # --------------------------------------------------
+    # 6. Check obstacle clearance using SDF
+    # --------------------------------------------------
+    tensor_points = o3d.core.Tensor(candidate_points, dtype=o3d.core.Dtype.Float32)
+    distances = scene.compute_signed_distance(tensor_points).numpy()
+
+    safe_mask = np.abs(distances) > min_obstacle_distance
+    valid_points = candidate_points[safe_mask]
+
+    if len(valid_points) == 0:
+        raise RuntimeError("No safe frontal positions (too close to obstacles).")
+
+    # --------------------------------------------------
+    # 7. Select closest valid point (most stable)
+    # --------------------------------------------------
+    selected_coordinates = valid_points[0]
+
+    if vis_block:
+        sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.08)
+        sphere.translate(selected_coordinates)
+        sphere.paint_uniform_color((0, 1, 0))
+
+        target_sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.08)
+        target_sphere.translate(target)
+        target_sphere.paint_uniform_color((1, 0, 0))
+
+        o3d.visualization.draw_geometries([env_cloud, sphere, target_sphere])
+
+    # --------------------------------------------------
+    # 8. Create pose and face target
+    # --------------------------------------------------
+    pose = Pose3D(selected_coordinates)
+    pose.set_rot_from_direction(target - selected_coordinates)
+
+    print(f"Selected body position: {selected_coordinates}")
+
     return pose
 
 
@@ -417,26 +533,51 @@ def collect_dynamic_point_cloud(
     for i, angled_pose in enumerate(angled_view_poses):
         move_arm(pos_node, angled_pose)
         time.sleep(0.5)
-        
+        t1 = time.time()
         rgb = get_rgb_picture(RGBImageSubscriber, pose_node, "/gripper_camera/color/image_rect_raw", gripper=True, save_block=True)
+        t2 = time.time()        
+        print(f"RGB capture time: {t2 - t1:.2f}s")
         image_path = f'/home/ws/data/images/viewpoints/gripper_{i}.png'
         cv2.imwrite(image_path, rgb) 
+        t3 = time.time()
+        print(f"RGB save time: {t3 - t2:.2f}s")
+        t4 = time.time()
         get_depth_picture(AlignedDepth2ColorSubscriber, pose_node, "/gripper_camera/aligned_depth_to_color/image_raw", gripper=True, save_block=True)
+        t5 = time.time()
+        print(f"Depth capture time: {t5 - t4:.2f}s")
        
         try:
-            _, dict = yolo_detect_object(obj, "gripper", save_block=True)
+            t6 = time.time()
+            det, dict = yolo_detect_object(obj, "gripper", save_block=True, use_gemini=True)
+            t7 = time.time()
+            print(f"YOLO FULL FUNC detection time: {t7 - t6:.2f}s")
+            if det is False:
+                print(f"Failed detecting object in view {i}")
+                continue
             x1, y1, x2, y2 = map(int, dict["box"])
-            mask, _, _ = sam_detect_object("gripper", (x1+x2)/2, (y1+y2)/2, i)
-        
+            t8 = time.time()
+            mask, _, _ = sam_detect_object("gripper", (x1+x2)/2, (y1+y2)/2, i, dict)
+            t9 = time.time()
+            print(f"SAM2 FULL Func detection time: {t9 - t8:.2f}s")
+            if mask is None:
+                print(f"Failed detecting object in view {i}")
+                continue
+            # Get point clouds
+            t10 = time.time()
             pcd_masked = get_cloud_from_gripper_detection(tf_node, mask)
             pcds_masked.append(pcd_masked)
             
             pcd_full = get_cloud_from_gripper_detection(tf_node)
             pcds_full.append(pcd_full)
+            t11 = time.time()
+            print(f"Point cloud extraction time: {t11 - t10:.2f}s")
+            # Visualize
             #o3d.visualization.draw_geometries([pcd_full, full_env_pcd])
             
             pcd_down = pcd_full.voxel_down_sample(voxel_size)
             pcd_down.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size * 2, max_nn=30))
+            t12 = time.time()
+            print(f"Point cloud downsampling time: {t12 - t11:.2f}s")
             pcds_down.append(pcd_down)
         except Exception as e:
             print(f"Failed detecting object in view {i}: {e}")
@@ -444,7 +585,7 @@ def collect_dynamic_point_cloud(
     # Full registration
     max_corr_coarse = voxel_size * 5
     max_corr_fine = voxel_size * 1.5
-    
+    t13 = time.time()
     pose_graph = full_registration(pcds_down, max_corr_coarse, max_corr_fine)  
     option = o3d.pipelines.registration.GlobalOptimizationOption(
         max_correspondence_distance=max_corr_fine, edge_prune_threshold=0.25, reference_node=len(pcds_down) - 1
@@ -453,7 +594,8 @@ def collect_dynamic_point_cloud(
         pose_graph, o3d.pipelines.registration.GlobalOptimizationLevenbergMarquardt(),
         o3d.pipelines.registration.GlobalOptimizationConvergenceCriteria(), option
     )
-    
+    t14 = time.time()
+    print(f"Full registration time: {t14 - t13:.2f}s")
     # Align single clouds
     obj_points = []
     obj_colors = []
@@ -484,6 +626,8 @@ def collect_dynamic_point_cloud(
     pcd_env, _ = pcd_env.remove_statistical_outlier(nb_neighbors=20, std_ratio=1.6)
     pcd_env.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.02 * 2, max_nn=30))
     pcd_env.translate(shift)
+    t15 = time.time()
+    print(f"Point cloud merging time: {t15 - t14:.2f}s")
     #o3d.visualization.draw_geometries([pcd_env])
     
     # Align env_pcd to full_env_pcd
@@ -500,6 +644,8 @@ def collect_dynamic_point_cloud(
     path = f'/home/ws/data/images/viewpoints/'
     o3d.io.write_point_cloud(path+"obj_cloud_vp.ply", pcd_obj)
     o3d.io.write_point_cloud(path+"env_cloud_vp.ply", lim_env_cloud)
+    end_time = time.time()
+    print(f"\nDynamic point cloud collection RUNTIME: {convert_time(end_time - t1)}\n")
     
     return pcd_obj, lim_env_cloud    
     

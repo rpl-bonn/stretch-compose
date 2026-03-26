@@ -67,10 +67,10 @@ class OpenVocabSearch:
             traceback.print_exc()
             return
     def search(self, object_name, no_proposals=3):
-        pcd_obj, pcd_env, mask_sim = get_mask_points(OBJECT, config, idx=0, vis_block=VIS_BLOCK)
+        pcd_obj, pcd_env, mask_sim = get_mask_points(object_name, config, idx=0, vis_block=VIS_BLOCK)
         
         if mask_sim < 0.25:
-            print(f"Low mask similarity {mask_sim:.3f}. The object '{OBJECT}' may not be well represented in the point cloud.")
+            print(f"Low mask similarity {mask_sim:.3f}. The object '{object_name}' may not be well represented in the point cloud.")
             return False, None, None, mask_sim, 0.0
             
         # Compute centroid and bounding box of pcd_obj
@@ -80,7 +80,7 @@ class OpenVocabSearch:
         obj_max = obj_points.max(axis=0)
         obj_bbox = (obj_min, obj_max)
 
-        print(f"Object {OBJECT}  centroid: {obj_centroid}, bounding box: {obj_bbox}")
+        print(f"Object {object_name} centroid: {obj_centroid}, bounding box: {obj_bbox}")
         
 
         # Find which furniture the object most likely belongs to

@@ -40,6 +40,7 @@ setup(
             'move_to_pose = stretch_package.stretch_movement.move_to_pose:main',
             'frame_transformer = stretch_package.stretch_state.frame_transformer:main',
             'localize_se3 = stretch_package.stretch_state.localize_se3:main',
+            'detection_visualizer = stretch_package.stretch_visualizer.detection_visualizer:main'
         ],
     },
 )

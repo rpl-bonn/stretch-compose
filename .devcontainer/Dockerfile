@@ -3,6 +3,7 @@ ARG ROS_DISTRO=humble
 ARG IMAGE_SUFFIX=-desktop-full
 FROM $DOCKER_REPO:$ROS_DISTRO$IMAGE_SUFFIX
 
+
 # ──────────────────────────── [NEW] KEY FIX ──────────────────────────────────
 # The ROS 2 signing key that ships in images built before 2025‑06‑01 is
 # expired.  Refresh it *before* the first apt-get update to avoid “EXPKEYSIG”.
@@ -30,6 +31,8 @@ RUN groupadd --gid $USER_GID $USERNAME \
     #&& apt-get install -y sudo \
     && echo $USERNAME ALL=\(root\) NOPASSWD:ALL > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME
+
+
 
 # Install additonal packages - add any that you need
 RUN apt-get update && apt-get upgrade -y && \
@@ -98,6 +101,15 @@ RUN apt-get update && apt-get install -y ros-humble-desktop ros-dev-tools rviz p
 # Install python dependencies
 RUN pip install open3d openai ikpy graphviz ultralytics apriltag git+https://github.com/openai/CLIP.git "numpy<1.25" transformers hydra-core
 
+
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+    libpulse0 pulseaudio-utils \
+    alsa-utils libasound2 libasound2-plugins && \
+    rm -rf /var/lib/apt/lists/*
+
+RUN apt-get update && apt-get install -y espeak-ng alsa-utils
 
 
 # Source ROS environment automatically

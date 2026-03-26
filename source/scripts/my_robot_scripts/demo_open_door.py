@@ -94,7 +94,6 @@ def execute_search(drawer_id: int) -> bool:
         connections = graph_data["connections"]
         
         ## Check each drawer for the object    
-        print("-----------------############################-----------------")
 
         with open(os.path.join(GRAPH_DIR, "drawers", f"{drawer_id}.json"), "r") as file:
             drawer_data = json.load(file)
@@ -105,9 +104,8 @@ def execute_search(drawer_id: int) -> bool:
             
         # Move robot in front of the drawer
         body_pose, front_normal = searchnet_planning.plan_drawer_search(furniture_name, furniture_center, drawer_center, 0.8)
-            
-        move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, drawer_center, 0.0, 0.0, 0.0, 0.09, stow=True, grasp=True)           
-            
+        move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, drawer_center, 0.0, 0.0, 0.10, 0.09, stow=True, grasp=True)           
+        
         # Take image of drawer to detect handle
         rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, "/gripper_camera/color/image_rect_raw", gripper=True)
         depth_img = get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, "/gripper_camera/aligned_depth_to_color/image_raw", gripper=True)
@@ -117,27 +115,36 @@ def execute_search(drawer_id: int) -> bool:
         print("----------------------------------------------------------")
         print(f"HANDLE POSE: {handle_pose}")
         print("----------------------------------------------------------")
-        print(f"DRAWER TYPE: {drawer_type}")
+        print(f"DOOR TYPE: {drawer_type}")
         print("----------------------------------------------------------")
         
         
         handle_pose.set_rot_from_direction(-front_normal)
         print("Next check Plan Drawer Search towards handle")
         # Refine robot position towards handle
-        body_pose, front_normal = searchnet_planning.plan_door_search(furniture_name, furniture_center, handle_pose, 0.5, rgb_img)
-        print(f'Body pose: {body_pose.as_ndarray()}')
+        body_pose, front_normal = searchnet_planning.plan_door_search(furniture_name, furniture_center, handle_pose, 0.9, rgb_img)
         # Open drawer and check for object inside
         if drawer_type == "front":
             move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, handle_pose, 0.0, 0.0, np.pi/2, 0.09, stow=False, grasp=True)
-            pull_door(joint_pose_node)
+            open_door(joint_pose_node)
             look_into_drawer(joint_pose_node, handle_pose)
             get_rgb_picture(RGBImageSubscriber, joint_pose_node, "/gripper_camera/color/image_rect_raw", gripper=True, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
             # detected, detection_dict = yolo_detect_object(OBJECT, "gripper", conf=0.2, save_block=SAVE_BLOCK)
             push(joint_pose_node, handle_pose.coordinates[2]-0.09)
             
-        if drawer_type == "right":
+        if drawer_type == "right" or drawer_type == "left":
             move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, handle_pose, 0.0, 0.0, np.pi/2, 0.09, stow=False, grasp=True)
-            pull_door(joint_pose_node)
+            print(f'Body pose: {body_pose}')
+            print(f'Handle pose: {handle_pose}')
+            
+            new_pos = new_pose_right(body_pose, handle_pose)
+            print(f"Calculated new pose: {new_pos}")
+            print("$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$")
+            move_in_side_of(stow_node, base_node, head_node, joint_pose_node, new_pos, handle_pose, 0.0, 0.0, np.pi/2, 0.11, stow=False, grasp=True)
+            open_door_ik(joint_position_node, joint_pose_node, handle_pose)
+            
+            # move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, handle_pose, 0.0, 0.0, np.pi/2, 0.09, stow=False, grasp=True)
+            #pull_door(joint_pose_node)
             # look_into_drawer(joint_pose_node, handle_pose)
             # get_rgb_picture(RGBImageSubscriber, joint_pose_node, "/gripper_camera/color/image_rect_raw", gripper=True, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
             # # detected, detection_dict = yolo_detect_object(OBJECT, "gripper", conf=0.2, save_block=SAVE_BLOCK)
@@ -163,9 +170,48 @@ def execute_search(drawer_id: int) -> bool:
 
     return success
   
-     
+def new_pose_right(body_pose:Pose3D, handle_pose:Pose3D) -> Pose3D:
+    x1 = body_pose.coordinates[0]
+    y1 = body_pose.coordinates[1]
+    y2 = handle_pose.coordinates[1]
+
+    new_x = x1 - ((y2 - y1) / 2)
+    new_y = (y1 + y2) / 2
+
+    new_pose = Pose3D(np.array([new_x, new_y, body_pose.coordinates[2]]))
+    new_pose.direction = body_pose.direction
+
+    return new_pose
+
+def new_pose_left(body_pose:Pose3D, handle_pose:Pose3D) -> Pose3D:
+    x1 = body_pose.coordinates[0]
+    y1 = body_pose.coordinates[1]
+    y2 = handle_pose.coordinates[1]
+
+    new_x = x1 + ((y2 - y1) / 2)
+    new_y = (y1 + y2) / 2
+
+    new_pose = Pose3D(np.array([new_x, new_y, body_pose.coordinates[2]]))
+    new_pose.direction = body_pose.direction
+
+    return new_pose
+
+# Handle pose: Pose3D(coords=(-0.84, -0.96, 1.10), direction=(-0.04, -1.00, -0.02))
+
+def open_door_ik(joint_position_node: JointPositionController, joint_pose_node: JointPoseController, handle_pose: Pose3D) -> None:
+    handle_pose.coordinates[1] += -0.04
+    print("Gripper opened")
+    time.sleep(1.5)
+    move_arm(joint_position_node, handle_pose, roll=False)
+    set_gripper(joint_pose_node, True)
+    adjust_door(joint_pose_node, handle_pose, pitch=-0.0, roll=0.0, lift=0.07)
+    set_gripper(joint_pose_node, -0.3)
+    open_door(joint_pose_node)
+    
+    
+
 if __name__ == "__main__":
     # docker run -p 5004:5004 --gpus all -it craiden/yolodrawer:v1.0 python3 app.py
     # args = os.sys.argv[2]
-    id=21
+    id=14
     execute_search(id)

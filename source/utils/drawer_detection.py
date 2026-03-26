@@ -75,7 +75,7 @@ def predict_yolodrawer(image: np.ndarray, config: Config, logger: Optional[Logge
             label = f"{name}: {conf:.2f}"
         cv2.putText(vis_image, label, (xmin, max(0, ymin - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
         IMG_DIR = config.get_subpath("images")
-        vis_path = os.path.join(IMG_DIR, "gripper_drawers.png")
+        vis_path = os.path.join(IMG_DIR, "sam3", "gripper_drawers.png")
         plt.imsave(vis_path, vis_image)
     return detections
 
@@ -109,6 +109,7 @@ def predict_door_yolodrawer(image: np.ndarray, config: Config, logger: Optional[
     classes = contents["classes"]
     confidences = contents["confidences"]
     bboxes = contents["bboxes"]
+    print('BBoxes:', bboxes)
 
     detections = []
     for cls, conf, bbox in zip(classes, confidences, bboxes):
@@ -118,12 +119,10 @@ def predict_door_yolodrawer(image: np.ndarray, config: Config, logger: Optional[
         detections.append(det)
 
     if vis_block:
-        print('########################################')
         IMG_DIR = config.get_subpath("images")
         vis_path = os.path.join(IMG_DIR, "gripper_drawers.png")
         draw_drawer_boxes(image, detections)
     else:
-        print('?????????????????????????????????????????')
         vis_image = image.copy()
         names = sorted(list(set([det.name for det in detections])))
         names_dict = {name: i for i, name in enumerate(names)}
@@ -153,13 +152,12 @@ def predict_door_yolodrawer(image: np.ndarray, config: Config, logger: Optional[
             # add label with ID
             label = f"ID{idx}:{name}" if conf is None else f"ID{idx}:{name} {conf:.2f}"
             cv2.putText(vis_image, label, (xmin, max(0, ymin - 10)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 1)
         
         IMG_DIR = config.get_subpath("images")
-        vis_path = os.path.join(IMG_DIR, "gripper_abc.png")
+        vis_path = os.path.join(IMG_DIR, "gripper_door.png")
         cv2.imwrite(vis_path, vis_image)
         print(f"Detections saved to {vis_path}")
-        print('?????????????????????????????????????????')
 
         # plt.imsave(vis_path, vis_image)
     return detections
