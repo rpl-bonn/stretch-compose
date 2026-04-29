@@ -19,6 +19,17 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   DEPENDENCIES sensor_msgs
 )
 
+install(PROGRAMS
+  src/sam3_service.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY
+  src
+  src/utils
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   set(ament_cmake_copyright_FOUND TRUE)
