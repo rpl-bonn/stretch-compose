@@ -1,11 +1,11 @@
 {
     "name": "ROS Development Container",
     "privileged": true,
-    "remoteUser": "stretch",
+    "remoteUser": "${localEnv:USERNAME}",
     "build": {
         "dockerfile": "Dockerfile",
         "args": {
-            "USERNAME": "stretch",
+            "USERNAME": "${localEnv:USERNAME}",
             "DOCKER_REPO": "osrf/ros",
             "ROS_DISTRO": "humble",
             "IMAGE_SUFFIX": "-desktop-full"

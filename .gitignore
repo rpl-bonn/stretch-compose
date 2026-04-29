@@ -2,6 +2,7 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.vscode/
 
 # C extensions
 *.so
@@ -203,3 +204,6 @@ source/Mask3D/
 source/gpd/
 source/sam2/
 source/sam3/
+
+#data logs
+data_logging_stretch/
