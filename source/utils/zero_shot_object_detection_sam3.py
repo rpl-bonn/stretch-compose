@@ -42,36 +42,6 @@ from sam2.build_sam import build_sam2 # type: ignore
 from sam2.sam2_image_predictor import SAM2ImagePredictor # type: ignore
 from utils.openmask_interface import get_mask_points, get_text_similarity, select_with_clip
 
-# Fixed
-_PROCESSOR = Owlv2Processor.from_pretrained("google/owlv2-base-patch16-ensemble")
-_DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-_MODEL = Owlv2ForObjectDetection.from_pretrained("google/owlv2-base-patch16-ensemble", torch_dtype=torch.float16 if _DEVICE.type == "cuda" else torch.float32,
-  low_cpu_mem_usage=True)
-_MODEL.to(_DEVICE)
-_MODEL.eval()
-_SCORE_THRESH = 0.5
-
-yolo_model = YOLOWorld("/home/ws/source/yolov8x-worldv2.pt")
-yolo_model = yolo_model.to(_DEVICE)   # moves model weights
-yolo_model.eval()
-
-
-if _DEVICE.type == "cuda":
-    torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
-    if torch.cuda.get_device_properties(0).major >= 8:
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-
-# Load model and image
-sam2_checkpoint = "/home/ws/source/sam2/checkpoints/sam2.1_hiera_large.pt"
-model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-sam2_predictor = SAM2ImagePredictor(build_sam2(model_cfg, sam2_checkpoint, device=_DEVICE.type))
-
-# Adaptable
-VIS_BLOCK = False
-CLASSES = ["potted plant", "watering can", "herbs", "bottle", "pot", "pan", "cup", "plate", "bowl", "milk carton", "box", "stove", "oven",
-           "football", "football plushy", "tennis ball", "image frame", "cat plushy", "shark plushy", "folder", "drawer", "door"]
-
 # Config and Paths
 config = Config()
 ending = config["pre_scanned_graphs"]["high_res"]
@@ -79,7 +49,61 @@ scan_path = config.get_subpath("ipad_scans")
 SCAN_DIR = os.path.join(scan_path, ending)
 IMG_DIR = config.get_subpath("images")
 
-gemini_predictor = gemini_client.GeminiLocationPredictor()
+# Fixed
+_DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+_SCORE_THRESH = 0.5
+
+if _DEVICE.type == "cuda":
+    torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
+    if torch.cuda.get_device_properties(0).major >= 8:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
+_PROCESSOR = None
+_MODEL = None
+yolo_model = None
+sam2_predictor = None
+_gemini_predictor = None
+
+
+_SAM2_CHECKPOINT = "/home/ws/source/sam2/checkpoints/sam2.1_hiera_large.pt"
+_SAM2_MODEL_CFG = "configs/sam2.1/sam2.1_hiera_l.yaml"
+
+# Only initialize models when needed to save time and GPU memory, especially since some detections only require one model. 
+def _init_owlv2():
+    global _PROCESSOR, _MODEL
+    if _MODEL is None:
+        _PROCESSOR = Owlv2Processor.from_pretrained("google/owlv2-base-patch16-ensemble")
+        _MODEL = Owlv2ForObjectDetection.from_pretrained(
+            "google/owlv2-base-patch16-ensemble",
+            torch_dtype=torch.float16 if _DEVICE.type == "cuda" else torch.float32,
+            low_cpu_mem_usage=True,
+        )
+        _MODEL.to(_DEVICE)
+        _MODEL.eval()
+
+def _init_yolo():
+    global yolo_model
+    if yolo_model is None:
+        yolo_model = YOLOWorld("/home/ws/source/yolov8x-worldv2.pt")
+        yolo_model = yolo_model.to(_DEVICE)
+        yolo_model.eval()
+
+def _init_sam2():
+    global sam2_predictor
+    if sam2_predictor is None:
+        sam2_predictor = SAM2ImagePredictor(build_sam2(_SAM2_MODEL_CFG, _SAM2_CHECKPOINT, device=_DEVICE.type))
+
+# Adaptable
+VIS_BLOCK = False
+CLASSES = ["potted plant", "watering can", "herbs", "bottle", "pot", "pan", "cup", "plate", "bowl", "milk carton", "box", "stove", "oven",
+           "football", "football plushy", "tennis ball", "image frame", "cat plushy", "shark plushy", "folder", "drawer", "door"]
+
+def _get_gemini_predictor():
+    global _gemini_predictor
+    if _gemini_predictor is None:
+        _gemini_predictor = gemini_client.GeminiLocationPredictor()
+    return _gemini_predictor
 
 def parse_detection_output(model_output: dict, img_width: int, img_height: int) -> tuple[bool, dict]:
     """
@@ -237,6 +261,7 @@ def owlv2_detect_objects() -> None:
     """
     Detect objects in images using the OWL-ViT model.
     """
+    _init_owlv2()
     for image_file in [f for f in os.listdir(IMG_DIR) if f.startswith("frame")]:
         image = cv2.imread(os.path.join(IMG_DIR, image_file)) 
         image = np.asarray(image)
@@ -283,21 +308,22 @@ def owlv2_detect_object(obj: str, camera: str, conf: float=0.25, save_block: boo
     Returns:
         tuple[bool, dict]: Tuple containing a boolean indicating if the object was detected and a dictionary with detection information.
     """
+    _init_owlv2()
     detected = False
     detection_dict = {}
     image_path = os.path.join(IMG_DIR, f"{camera}_image_rgb.png")
-    image = cv2.imread(image_path) 
+    image = cv2.imread(image_path)
     if image is None:
         print(f"Warning: Image file not found at {image_path}. Skipping image check.")
         return False, {}
-    
+
     image = np.asarray(image)
-    
+
     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     image = normalize_image(image)
     texts = [f"a photo of a {obj}"]
     image_pil = Image.fromarray(image)
-    
+
     # Detect objects
     start_time = time.time()
 
@@ -348,8 +374,7 @@ def yolo_detect_objects() -> None:
     """
     Detect objects in images using the YOLO-World model.
     """
-    # Load model
-    #model = YOLOWorld("/home/ws/source/yolov8x-worldv2.pt")
+    _init_yolo()
     yolo_model.set_classes(CLASSES)
 
     for image_file in [f for f in os.listdir(IMG_DIR) if f.startswith("frame")]:
@@ -374,6 +399,7 @@ def yolo_world_detect_object(obj: str, camera: str, conf: float = 0.25, save_blo
     """
     Run YOLO-World detection only.
     """
+    _init_yolo()
     image_path = os.path.join(IMG_DIR, f"{camera}_image_rgb.png")
     if not os.path.exists(image_path):
         return False, {}
@@ -418,7 +444,7 @@ def gemini_detect_object(obj: str, camera: str, save_block: bool = False) -> tup
                 img.convert("RGB").save(jpeg_buffer, format="JPEG", quality=85)
                 image_bytes = jpeg_buffer.getvalue()
 
-        output = gemini_predictor.detect_object_in_image(image_data=image_bytes, object_name=obj)
+        output = _get_gemini_predictor().detect_object_in_image(image_data=image_bytes, object_name=obj)
         img = cv2.imread(image_path)
         h, w = img.shape[:2]
         detected, detection_dict = parse_detection_output(output, img_width=w, img_height=h)
@@ -508,10 +534,11 @@ def yolo_detect_object_old(obj: str, camera: str, conf: float=0.2, save_block: b
     Returns:
         tuple[bool, dict]: Tuple containing a boolean indicating if the object was detected and a dictionary with detection information.
     """
+    _init_yolo()
     detected = False
     detection_dict = {}
     image_path = os.path.join(IMG_DIR, f"{camera}_image_rgb.png")
-    
+
     # Always try the full object name first, then try combos if not detected
     obj_words = obj.split()
     combos = []
@@ -571,7 +598,7 @@ def yolo_detect_object_old(obj: str, camera: str, conf: float=0.2, save_block: b
                                 detected = False
                                 detection_dict = {}
                             
-                            output = gemini_predictor.detect_object_in_image(image_data=image_bytes, object_name=obj)
+                            output = _get_gemini_predictor().detect_object_in_image(image_data=image_bytes, object_name=obj)
                             img = cv2.imread(image_path)
                             h, w = img.shape[:2]
                             detected, detection_dict = parse_detection_output(output, img_width=w, img_height=h)
@@ -630,6 +657,7 @@ def sam_detect_object(camera: str, x: int, y: int, i: int, input_box: dict = Non
         tuple[np.array, np.array, np.array]: Tuple containing the mask, score, and logits of the detected object.
     """
     
+    _init_sam2()
     image = Image.open(os.path.join(IMG_DIR, f"{camera}_image_rgb.png"))
     start_time = time.time()
     sam2_predictor.set_image(image)
@@ -669,7 +697,7 @@ def sam_detect_object(camera: str, x: int, y: int, i: int, input_box: dict = Non
     # return masks[0], scores[0], logits[0]
 
 def sam_random_detect(camera: str, i: int, num_points: int = 10) -> list[dict]:
-    
+    _init_sam2()
     image = Image.open(os.path.join(IMG_DIR, f"{camera}_image_rgb.png")).convert("RGB")
     sam2_predictor.set_image(image)
     w, h = image.size
@@ -830,7 +858,7 @@ def get_cloud_from_gripper_detection(tf_node: FrameTransformer, mask: np.ndarray
     return pcd
 
 
-def drawer_handle_matches(detections: list[Detection]) -> list[Match]:
+def drawer_handle_matches(detections: list[Detection], ioa_threshold: float = 0.9) -> list[Match]:
     """
     Match drawer and handle detections based on their bounding boxes and IOA (Intersection Over Area).
     This function takes a list of detections, filters out drawer and handle detections,
@@ -864,6 +892,8 @@ def drawer_handle_matches(detections: list[Detection]) -> list[Match]:
         intersection_area = overlap_width * overlap_height
         handle_area = (handle_right - handle_left) * (handle_bottom - handle_top)
 
+        if handle_area <= 0:
+            return 0.0, 0.0
         ioa = intersection_area / handle_area
         if ioa == 0:
             return ioa, ioa
@@ -881,7 +911,7 @@ def drawer_handle_matches(detections: list[Detection]) -> list[Match]:
     drawer_idxs, handle_idxs = linear_sum_assignment(-matching_scores[..., 0])
     matches = [Match(drawer_detections[drawer_idx], handle_detections[handle_idx])
                for (drawer_idx, handle_idx) in zip(drawer_idxs, handle_idxs)
-               if matching_scores[drawer_idx, handle_idx, 1] > 0.9  # ioa
+               if matching_scores[drawer_idx, handle_idx, 1] > ioa_threshold
                ]
 
     for drawer_idx, drawer_detection in enumerate(drawer_detections):
@@ -976,12 +1006,84 @@ def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, 
 
     save_data = [("image.npy", np.save, rgb_img)]
     image_path, *_ = save_files(save_data, tmp_path)
+    print(
+        "SAM3 caller image info: "
+        f"type={type(rgb_img)}, "
+        f"shape={getattr(rgb_img, 'shape', None)}, "
+        f"dtype={getattr(rgb_img, 'dtype', None)}"
+    )
     predictions = call_sam3(sam3_client,rgb_img, prompts)
     print("================== DRAWER HANDLE DETECTION ==================")
     print("Drawer-door detections:", predictions)
+
+    if predictions:
+        print("Raw SAM3 detections:")
+        for det in predictions:
+            bbox = det.bbox
+            print(f"  - label={det.name} conf={det.conf:.3f} bbox=({bbox.xmin:.1f},{bbox.ymin:.1f},{bbox.xmax:.1f},{bbox.ymax:.1f})")
+    else:
+        print("Raw SAM3 detections: []")
+
+    # Save and publish an annotated debug frame so failures can be inspected even without a live ROS image subscriber.
+    # debug_img_path = os.path.join(IMG_DIR, "gripper_sam3_debug.png")
+    # annotated_debug_path = os.path.join(IMG_DIR, "gripper_sam3_debug_annotated.png")
+    # cv2.imwrite(debug_img_path, rgb_img)
+    # vis_dets = []
+    # for det in predictions:
+    #     bbox = det.bbox
+    #     vis_dets.append({
+    #         "label": det.name,
+    #         "confidence": float(det.conf),
+    #         "box": [int(bbox.xmin), int(bbox.ymin), int(bbox.xmax), int(bbox.ymax)],
+    #     })
+
+    # # Also write a static annotated image to disk for deterministic debugging.
+    # annotated = rgb_img.copy()
+    # for det in vis_dets:
+    #     x0, y0, x1, y1 = det["box"]
+    #     color = (0, 255, 0) if "handle" in det["label"] or "knob" in det["label"] else (255, 180, 0)
+    #     cv2.rectangle(annotated, (x0, y0), (x1, y1), color, 2)
+    #     cv2.putText(
+    #         annotated,
+    #         f"{det['label']}:{det['confidence']:.2f}",
+    #         (x0, max(0, y0 - 8)),
+    #         cv2.FONT_HERSHEY_SIMPLEX,
+    #         0.4,
+    #         color,
+    #         1,
+    #         cv2.LINE_AA,
+    #     )
+    # cv2.imwrite(annotated_debug_path, annotated)
+
+    # vis = detection_visualizer.DetectionVisualizer(topic="annotated_image")
+    # vis.visualize(debug_img_path, detections=vis_dets)
+    # vis.close()
     
-    matches = drawer_handle_matches(predictions)
+    ioa_threshold = 0.9  # Temporary relaxed threshold for debugging
+    print(f"Using drawer-handle IOA threshold: {ioa_threshold}")
+    matches = drawer_handle_matches(predictions, ioa_threshold=ioa_threshold)
     filtered_matches = [m for m in matches if (m.handle is not None and m.drawer is not None)]
+    
+    # Fallback: if IoA matching fails, pair the highest-confidence handle with nearest drawer center.
+    if filtered_matches==[]:
+        drawer_detections = [det for det in predictions if ("door" in det.name or "drawer" in det.name)]
+        handle_detections = [det for det in predictions if ("handle" in det.name or "knob" in det.name)]
+
+        if drawer_detections and handle_detections:
+            best_handle = max(handle_detections, key=lambda d: float(d.conf))
+
+            hx = 0.5 * (best_handle.bbox.xmin + best_handle.bbox.xmax)
+            hy = 0.5 * (best_handle.bbox.ymin + best_handle.bbox.ymax)
+
+            def center_dist_sq(drawer_det):
+                dx = 0.5 * (drawer_det.bbox.xmin + drawer_det.bbox.xmax)
+                dy = 0.5 * (drawer_det.bbox.ymin + drawer_det.bbox.ymax)
+                return (dx - hx) ** 2 + (dy - hy) ** 2
+
+            best_drawer = min(drawer_detections, key=center_dist_sq)
+            filtered_matches = [Match(best_drawer, best_handle)]
+            print("Fallback match used: nearest drawer to highest-confidence handle.")
+
     print("\nFiltered matches:", filtered_matches)
     if not filtered_matches:
         print("No valid handle-drawer matches found.")
