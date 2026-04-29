@@ -62,6 +62,10 @@ def get_distance_to_shelf(obj: str, index: int|None=None) -> tuple[float, np.nda
         scene_data = json.load(file)
     print(scene_data)
     print(f"Furniture ID: {furniture_id}")
+    if str(furniture_id) not in scene_data["furniture"]:
+        raise KeyError(f"Furniture ID '{furniture_id}' not found in scene graph. "
+                       f"Available IDs: {list(scene_data['furniture'].keys())}. "
+                       f"Delete stale location proposals and re-run.")
     furniture_name = scene_data["furniture"][furniture_id]["label"]
     furniture_centroid = scene_data["furniture"][furniture_id]["centroid"]
     furniture_dimensions = scene_data["furniture"][furniture_id]["dimensions"]

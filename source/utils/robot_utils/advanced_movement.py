@@ -462,9 +462,9 @@ def look_for_door(pose_node: JointPoseController, wrist: float = 0.15):
     spin_until_complete(pose_node)
     
 def move_in_front_of(
-    stow_node: StowArmController, base_node: BaseController, head_node: HeadJointController, pose_node: JointPoseController, 
+    stow_node: StowArmController, base_node: BaseController, head_node: HeadJointController, pose_node: JointPoseController,
     body_pose: Pose3D, target_center: Pose3D, yaw: float, pitch: float, roll: float, lift: float, stow: bool = True, grasp: bool = False
-) -> None:
+) -> bool:
     """
     Move and turn the robot in front of a target object.
     This function stows the arm, moves the robot's base to a specified position,
@@ -483,12 +483,17 @@ def move_in_front_of(
         lift (float): Gripper lift adjustment
         stow (bool, optional): Whether the robot stows at the beginning. Defaults to True.
         grasp (bool, optional): Whether the robot wants to grasp an object. Defaults to False.
+
+    Returns:
+        bool: Whether the base movement succeeded.
     """
     if stow:
         print('#######################################')
         stow_arm(stow_node)
         print('#######################################')
-    move_body(base_node, body_pose.to_dimension(2))
+    reached = move_body(base_node, body_pose.to_dimension(2))
+    if not reached:
+        return False
     print("NOW TURNING")
     print(f"Target center: {target_center.as_ndarray()}")
     turn_body(pose_node, target_center.to_dimension(2), grasp=grasp)
@@ -499,6 +504,7 @@ def move_in_front_of(
         time.sleep(2)
         move_head(head_node, target_center, tilt_bool=True)
         time.sleep(1)
+    return True
         
 
 def move_in_side_of(
