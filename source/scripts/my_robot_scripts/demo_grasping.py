@@ -1,3 +1,4 @@
+
 import json
 import numpy as np
 import os
@@ -29,6 +30,7 @@ from utils.openmask_interface import get_mask_points
 from utils.openmask_interface import get_text_similarity
 from utils.open_vocab_graph_search import OpenVocabSearch
 from utils.llm_utils import openai_client
+from utils.llm_utils.gemini_client import GeminiLocationPredictor
 
 # Adaptable
 # Defaults
@@ -120,10 +122,12 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
             detected, detection_dict = yolo_detect_object(OBJECT, "head", save_block=save_block)
             if detected == False:
                 print(f"Failed to detect {OBJECT} in/on {furniture} despite being in the scene graph.")
-                oai = openai_client.oai_client
+                # oai = openai_client.oai_client
+                # img_path = os.path.join(IMG_DIR, f"camera_image_rgb.png")
+                # result = openai_client.check_image_response_for_object(oai, room_json_path, OBJECT, "gpt-4o-mini")
+                gemini_client = GeminiLocationPredictor()
                 img_path = os.path.join(IMG_DIR, f"camera_image_rgb.png")
-                result = openai_client.check_image_response_for_object(oai, room_json_path, OBJECT, "gpt-4o-mini")
-            
+                result = gemini_client.check_image_response_for_object(img_path, OBJECT)
         else:     
             # Check if location proposals already exist for the object
             object_filename = f"{OBJECT.replace(' ', '_')}.json"
@@ -146,7 +150,7 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
                 ovs = OpenVocabSearch()
                 #print("Skipping open vocabulary search for now.")
                 
-                candidate_found, likely_furniture_id, likely_furniture_label, mask_sim, text_sim = ovs.search(OBJECT, no_proposals=NO_PROPOSALS)
+                candidate_found, likely_furniture_id, likely_furniture_label, mask_sim, text_sim = ovs.search(OBJECT, no_proposals=NO_PROPOSALS_DEFAULT)
                 
                 if candidate_found:
                     probability = ovs.compute_probability(mask_sim, text_sim, 0.4)
@@ -170,19 +174,28 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
         if detected == False and location_proposals_already_exist == False:          
             # Check for object at the different locations proposed by DeepSeek
             print(f"No suitable furniture found for {OBJECT} with high enough probability. Asking openai for likely locations.")
-            oai = openai_client.oai_client
-            result = openai_client.ask_for_shelf_with_room_json(oai, room_json_path, OBJECT, "trash can", "gpt-4o-mini")
-
+            # oai = openai_client.oai_client
+            # result = openai_client.ask_for_shelf_with_room_json(oai, room_json_path, OBJECT, "trash can", "gpt-4o-mini")
+            gemini_client = GeminiLocationPredictor()
+            result = gemini_client.ask_for_shelf_with_room_json(room_json_path, OBJECT)
+            
             filename = f"{OBJECT.replace(' ', '_')}.json"
             object_location_json_path_llm_filename = os.path.join(object_location_json_path, filename)
             print(f"Saving object location prediction to {object_location_json_path_llm_filename}")
+            if not os.path.exists(object_location_json_path_llm_filename):
+                os.makedirs(os.path.dirname(object_location_json_path_llm_filename), exist_ok=True)
             with open(object_location_json_path_llm_filename, 'w') as f:
                 json.dump(result, f, indent=4)
             location_proposals_already_exist = True
             
         if (not candidate_found_with_high_probability or not detected) and location_proposals_already_exist:
-            for i in range(NO_PROPOSALS):
-                target_pos, furniture, front_normal, body_pose, furniture_id  = searchnet_planning.plan_furniture_search(OBJECT, i)
+            print(f"Checking for {OBJECT} at all locations proposed by LLM.")
+            for i in range(NO_PROPOSALS_DEFAULT):
+                try:
+                    target_pos, furniture, front_normal, body_pose, furniture_id  = searchnet_planning.plan_furniture_search(OBJECT, i)
+                except (KeyError, ValueError) as e:
+                    print(f"Skipping proposal {i}: {e}")
+                    continue
                 # Skip if already checked
                 if furniture_id in checked_furniture_ids:
                     print(f"Already checked {furniture} ({furniture_id}).")
