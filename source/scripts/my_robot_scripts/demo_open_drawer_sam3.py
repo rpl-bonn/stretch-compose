@@ -116,7 +116,7 @@ def execute_search(drawer_id: int) -> bool:
             tolerance += 0.1
         print(f"Body pose: {body_pose}, front normal: {front_normal}")
         print('$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$')
-        move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, drawer_center, 0.0, 0.0, 0.0, 0.09, stow=False, grasp=True)           
+        move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, drawer_center, 0.0, 0.0, 0.0, 0.09, stow=True, grasp=True)           
             
         # Take image of drawer to detect handle
         rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, "/gripper_camera/color/image_rect_raw", gripper=True)

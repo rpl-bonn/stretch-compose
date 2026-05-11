@@ -11,7 +11,7 @@ from utils.coordinates import Pose3D
 from utils.openmask_interface import get_mask_points
 from utils.point_clouds import body_planning_front, body_planning_door, body_planning_front_modified
 from utils.recursive_config import Config
-from utils.zero_shot_object_detection import get_position_from_head_detection
+from utils.zero_shot_object_detection_sam3 import get_position_from_head_detection
 
 
 # Fixed
@@ -263,6 +263,41 @@ def plan_furniture_search(obj: str, index: int|None=None) -> tuple[Pose3D, str, 
 
         
     return Pose3D(furniture_center), furniture_name, front_normal, body_pose, furniture_id
+
+
+def plan_furniture_search_by_label(label: str, scene_data: dict) -> list[tuple]:
+    """
+    Plan furniture approach for all furniture items matching the given label.
+    Used when the object is not in the scene graph but we want to check a known furniture type.
+    """
+    results = []
+    for furniture_id, furniture_info in scene_data["furniture"].items():
+        if furniture_info["label"] != label:
+            continue
+
+        furniture_name = furniture_info["label"]
+        furniture_centroid = np.array(furniture_info["centroid"])
+
+        for idx in range(0, 20):
+            furniture_pcd, env_pcd, _ = get_mask_points(label, Config(), idx=idx, vis_block=VIS_BLOCK)
+            furniture_center = np.mean(np.asarray(furniture_pcd.points), axis=0)
+            if np.allclose(furniture_center, furniture_centroid, atol=0.1):
+                print(f"{label} found!")
+                front_normal = get_shelf_front_normal(furniture_pcd, furniture_name)
+                body_pose = body_planning_front(
+                    env_pcd,
+                    furniture_center,
+                    furniture_normal=front_normal,
+                    min_target_distance=0.8, #tunable params: how far away the robot should be from the furniture
+                    max_target_distance=1.2,
+                    min_obstacle_distance=0.4,
+                    n=5,
+                    vis_block=VIS_BLOCK,
+                )
+                results.append((Pose3D(furniture_center), furniture_name, front_normal, body_pose, furniture_id))
+                break
+
+    return results
 
 
 def plan_object_search(
