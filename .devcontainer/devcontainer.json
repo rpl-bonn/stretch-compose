@@ -55,7 +55,7 @@
     "mounts": [
         "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind,consistency=cached",
         "source=/dev/dri,target=/dev/dri,type=bind,consistency=cached",
-        "source=${localEnv:HOME}/.ssh,target=/home/stretch/.ssh,type=bind",
+        "source=${localEnv:HOME}/.ssh,target=/home/${localEnv:USERNAME}/.ssh,type=bind",
         "source=${localEnv:HOME}/.Xauthority,target=${localEnv:HOME}/.Xauthority,type=bind"
     ],
     "initializeCommand": "sh ./.devcontainer/initialize.sh",

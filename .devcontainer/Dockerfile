@@ -101,6 +101,11 @@ RUN apt-get update && apt-get install -y ros-humble-desktop ros-dev-tools rviz p
 # Install python dependencies
 RUN pip install open3d openai ikpy graphviz ultralytics apriltag git+https://github.com/openai/CLIP.git "numpy<1.25" transformers hydra-core
 
+# Install rmw_cyclonedds_cpp for better performance
+RUN apt-get update && apt-get install -y ros-humble-rmw-cyclonedds-cpp
+
+# Install google genai and iopath
+RUN pip install google-genai iopath
 
 
 RUN apt-get update && \
@@ -115,6 +120,9 @@ RUN apt-get update && apt-get install -y espeak-ng alsa-utils
 # Source ROS environment automatically
 RUN echo "source /opt/ros/$ROS_DISTRO/setup.bash" >> /home/$USERNAME/.bashrc
 RUN echo "source /home/ws/ros2_ws/install/setup.bash" >> /home/$USERNAME/.bashrc
+
+#set rmw implementation to cyclonedds for better performance
+RUN echo "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp" >> /home/$USERNAME/.bashrc
 
 # Set the default user
 USER $USERNAME
