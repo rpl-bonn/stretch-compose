@@ -999,7 +999,33 @@ def detect_handle(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.
 
     return handle_pose_map, open_dir, hinge_pose_map
 
-def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.ndarray, prompts: list[str]) -> tuple[Pose3D, str, Pose3D]:
+def sam3_detect_object(obj: str, rgb_img: np.ndarray, conf: float=0.25, save_block: bool = False) -> tuple[bool, dict]:
+    sam3_client = Sam3Client()
+    tmp_path = prep_tmp_path(config)
+    save_data = [("image.npy", np.save, rgb_img)]
+    image_path, *_ = save_files(save_data, tmp_path)
+    print(
+        "SAM3 caller image info: "
+        f"type={type(rgb_img)}, "
+        f"shape={getattr(rgb_img, 'shape', None)}, "
+        f"dtype={getattr(rgb_img, 'dtype', None)}"
+    )
+    predictions = call_sam3(sam3_client,rgb_img, [obj])
+    print("SAM3 predictions:", predictions)
+    if predictions:
+        best_pred = max(predictions, key=lambda p: float(p.conf))
+        detection_dict = {
+            'label': best_pred.name,
+            'confidence': float(best_pred.conf),
+            'box': (int(best_pred.bbox.xmin), int(best_pred.bbox.ymin), int(best_pred.bbox.xmax), int(best_pred.bbox.ymax))
+        }
+        print(f"SAM3 Detection found: {detection_dict}")
+        return True, detection_dict
+    else:
+        print("SAM3 did not detect the object")
+        return False, {}
+
+def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.ndarray, prompts: list[str], target_z: float | None = None) -> tuple[Pose3D, str, Pose3D]:
     
     sam3_client = Sam3Client()
     tmp_path = prep_tmp_path(config)
@@ -1069,33 +1095,75 @@ def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, 
         drawer_detections = [det for det in predictions if ("door" in det.name or "drawer" in det.name)]
         handle_detections = [det for det in predictions if ("handle" in det.name or "knob" in det.name)]
 
-        if drawer_detections and handle_detections:
-            best_handle = max(handle_detections, key=lambda d: float(d.conf))
+        # if drawer_detections and handle_detections:
+        #     best_handle = max(handle_detections, key=lambda d: float(d.conf))
 
-            hx = 0.5 * (best_handle.bbox.xmin + best_handle.bbox.xmax)
-            hy = 0.5 * (best_handle.bbox.ymin + best_handle.bbox.ymax)
+        #     hx = 0.5 * (best_handle.bbox.xmin + best_handle.bbox.xmax)
+        #     hy = 0.5 * (best_handle.bbox.ymin + best_handle.bbox.ymax)
 
-            def center_dist_sq(drawer_det):
-                dx = 0.5 * (drawer_det.bbox.xmin + drawer_det.bbox.xmax)
-                dy = 0.5 * (drawer_det.bbox.ymin + drawer_det.bbox.ymax)
-                return (dx - hx) ** 2 + (dy - hy) ** 2
+        #     def center_dist_sq(drawer_det):
+        #         dx = 0.5 * (drawer_det.bbox.xmin + drawer_det.bbox.xmax)
+        #         dy = 0.5 * (drawer_det.bbox.ymin + drawer_det.bbox.ymax)
+        #         return (dx - hx) ** 2 + (dy - hy) ** 2
 
-            best_drawer = min(drawer_detections, key=center_dist_sq)
-            filtered_matches = [Match(best_drawer, best_handle)]
-            print("Fallback match used: nearest drawer to highest-confidence handle.")
+        #     best_drawer = min(drawer_detections, key=center_dist_sq)
+        #     filtered_matches = [Match(best_drawer, best_handle)]
+        #     print("Fallback match used: nearest drawer to highest-confidence handle.")
+
+        if drawer_detections and not handle_detections:
+            # Handle detections missing —
+            # use the center of the highest-confidence drawer as a proxy handle position.
+            best_drawer = max(drawer_detections, key=lambda d: float(d.conf))
+            filtered_matches = [Match(best_drawer, best_drawer)]
+            print("Fallback match used: drawer center as proxy handle position (no handle detected).")
 
     print("\nFiltered matches:", filtered_matches)
     if not filtered_matches:
         print("No valid handle-drawer matches found.")
         return None, None, None
-    
-    sorted_matches = sorted(
-        filtered_matches, 
-        key=lambda m: ((m.handle.bbox.xmin+m.handle.bbox.xmax)//2 - rgb_img.shape[1]//2)**2 + 
-                    ((m.handle.bbox.ymin+m.handle.bbox.ymax)//2 - rgb_img.shape[0]//2)**2)
-    
+
+    if target_z is not None:
+        # Pick the match whose handle projects closest to the expected world Z height.
+        # This disambiguates stacked drawers that are close in X/Y but differ in Z.
+        _cam_mat = intrinsics_from_camera('/gripper_camera/color/camera_info')
+        _fx, _fy = _cam_mat[0, 0], _cam_mat[1, 1]
+        _cx, _cy = _cam_mat[0, 2], _cam_mat[1, 2]
+        _tf = tf_node.get_tf_matrix("map", "gripper_camera_color_optical_frame")
+        spin_until_complete(tf_node)
+
+        def _handle_world_z(m):
+            """
+            Given pixel and depth,
+            recover 3D world Z coordinate of handle center and compare to target Z
+            """
+            
+            #find handle center pixel
+            hx = int((m.handle.bbox.xmin + m.handle.bbox.xmax) // 2)
+            hy = int((m.handle.bbox.ymin + m.handle.bbox.ymax) // 2)
+            #check depth value at handle center pixel, return large error if no valid depth
+            d = depth_img[hy, hx] / 1000.0
+            if d <= 0:
+                return float('inf')
+            #get world coordinates of handle center pixel
+            #x coordinate = 
+            px = (hx - _cx) * d / _fx
+            py = (hy - _cy) * d / _fy
+            #get world Z coordinate of handle center pixel
+            world = np.array([px, py, d, 1.0]) @ _tf.T
+            return abs(world[2] - target_z)
+        
+        #pick the match with smallest handle Z error
+        best_match = min(filtered_matches, key=_handle_world_z)
+        print(f"Target Z={target_z:.3f}m — selected handle world-Z error={_handle_world_z(best_match):.3f}m")
+    else:
+        sorted_matches = sorted(
+            filtered_matches,
+            key=lambda m: ((m.handle.bbox.xmin+m.handle.bbox.xmax)//2 - rgb_img.shape[1]//2)**2 +
+                          ((m.handle.bbox.ymin+m.handle.bbox.ymax)//2 - rgb_img.shape[0]//2)**2)
+        best_match = sorted_matches[0]
+
     # Get the handle bounding box and center
-    best_match = sorted_matches[0]
+    # (best_match already selected above)
     hbbox = best_match.handle.bbox
     dbbox = best_match.drawer.bbox
     
