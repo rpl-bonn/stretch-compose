@@ -163,16 +163,19 @@ def push(pose_node: JointPoseController, height: float) -> None:
     push_pose = {'wrist_extension': 0.0, 'joint_lift': height, 'joint_wrist_pitch': 0.0}
     pose_node.send_joint_pose(push_pose)
     spin_until_complete(pose_node)
+    time.sleep(2.0)
     # Push drawer
-    push_pose = {'wrist_extension': (0.49, 85.0)}
+    push_pose = {'wrist_extension': (0.40, 50.0)}
     pose_node.send_joint_pose(push_pose)
     spin_until_complete(pose_node)
-    time.sleep(1.0)
-    # Retract arm after pushing
-    push_pose = {'wrist_extension': 0.1}
+    time.sleep(10.0)
+    # Open gripper before retracting to avoid snagging on the drawer frame
+    # set_gripper(pose_node, 0.4)
+    # Retract arm — force-limited so it stops gracefully if there is residual resistance
+    push_pose = {'wrist_extension': (0.1, 40.0)}
     pose_node.send_joint_pose(push_pose)
     spin_until_complete(pose_node)
-    time.sleep(1.0)
+    time.sleep(10.0)
 
 def open_door(pose_node: JointPoseController):
     """
@@ -410,6 +413,7 @@ def look_into_drawer(pose_node: JointPoseController, handle_pose: Pose3D):
         pose_node (JointPoseController): ROS2 node to move arm into a certain pose
         handle_pose (Pose3D): 3D position of drawer handle
     """
+    print("Looking into drawer...")
     height = handle_pose.coordinates[2] + 0.3
     gripper_pose = {'wrist_extension': 0.01 , 'gripper_aperture': 1.0}
     pose_node.send_joint_pose(gripper_pose)

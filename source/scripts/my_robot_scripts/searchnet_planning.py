@@ -165,9 +165,16 @@ def get_shelf_front_normal(furniture_pcd: o3d.geometry.PointCloud, furniture_nam
                 
     front = {}
     if not vertical_faces:
-        if furniture_name in ["coffee table"]:
-            front['normal'] = np.array([0.0, 1.0, 0.0])
+        #testing this fallback case
         print("No vertical faces found in shelf structure")
+        # Fallback: use the direction from the furniture center towards the global origin (or +Y)
+        center_xy = np.array(center[:2])
+        if np.linalg.norm(center_xy) > 1e-3:
+            fallback = np.array([-center_xy[0], -center_xy[1], 0.0])
+            fallback /= np.linalg.norm(fallback)
+        else:
+            fallback = np.array([0.0, 1.0, 0.0])
+        front['normal'] = fallback
     else:
         print(f"Vertical faces found: {len(vertical_faces)}")
         if furniture_name in ["armchair", "couch", "sofa"]:
@@ -270,6 +277,13 @@ def plan_furniture_search_by_label(label: str, scene_data: dict) -> list[tuple]:
     Plan furniture approach for all furniture items matching the given label.
     Used when the object is not in the scene graph but we want to check a known furniture type.
     """
+    
+    LABEL_TO_CLIP_QUERY = {
+        "shelf": "shelf, bookshelf, kitchen counter, kallax",
+        "cabinet": "kitchen cabinet",
+    }
+    clip_query = LABEL_TO_CLIP_QUERY.get(label, label)
+
     results = []
     for furniture_id, furniture_info in scene_data["furniture"].items():
         if furniture_info["label"] != label:
@@ -279,7 +293,7 @@ def plan_furniture_search_by_label(label: str, scene_data: dict) -> list[tuple]:
         furniture_centroid = np.array(furniture_info["centroid"])
 
         for idx in range(0, 20):
-            furniture_pcd, env_pcd, _ = get_mask_points(label, Config(), idx=idx, vis_block=VIS_BLOCK)
+            furniture_pcd, env_pcd, _ = get_mask_points(clip_query, Config(), idx=idx, vis_block=VIS_BLOCK)
             furniture_center = np.mean(np.asarray(furniture_pcd.points), axis=0)
             if np.allclose(furniture_center, furniture_centroid, atol=0.1):
                 print(f"{label} found!")

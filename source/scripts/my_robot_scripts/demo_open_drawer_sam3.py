@@ -123,12 +123,19 @@ def execute_search(drawer_id: int) -> bool:
         depth_img = get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, "/gripper_camera/aligned_depth_to_color/image_raw", gripper=True)
         # Skip if no handle detected
         
-        handle_pose, drawer_type, _ = detect_drawer_handle_sam3(transform_node, depth_img, rgb_img, prompts)
+        
+        target_z = drawer_center.coordinates[2]
+        handle_pose, drawer_type, _ = detect_drawer_handle_sam3(transform_node, depth_img, rgb_img, prompts, target_z=target_z)
         print("----------------------------------------------------------")
         print(f"HANDLE POSE: {handle_pose}")
         print("----------------------------------------------------------")
         print(f"DRAWER TYPE: {drawer_type}")
         print("----------------------------------------------------------")
+        while handle_pose is None:
+            print("No handle detected, retrying...")
+            rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, "/gripper_camera/color/image_rect_raw", gripper=True)
+            depth_img = get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, "/gripper_camera/aligned_depth_to_color/image_raw", gripper=True)
+            handle_pose, drawer_type, _ = detect_drawer_handle_sam3(transform_node, depth_img, rgb_img, prompts, target_z=target_z)
         
         
         handle_pose.set_rot_from_direction(-front_normal)
