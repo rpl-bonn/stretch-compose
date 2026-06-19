@@ -1,0 +1,5 @@
+sensor_msgs/Image image
+string[] prompts
+string file
+---
+Detection[] detections

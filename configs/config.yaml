@@ -100,13 +100,21 @@ pre_scanned_graphs:
   # high_res: "2026_04_17"
   # masked: "2026_04_17"
 
-  # low_res: "2026_04_23"
-  # high_res: "2026_04_23"
-  # masked: "2026_04_23"
+  low_res: "2026_04_23"
+  high_res: "2026_04_23"
+  masked: "2026_04_23"
 
-  low_res: "2026_05_08"
-  high_res: "2026_05_08"
-  masked: "2026_05_08"
+  # low_res: "2026_05_08"
+  # high_res: "2026_05_08"
+  # masked: "2026_05_08"
+
+  # low_res: "2026_05_20"
+  # high_res: "2026_05_20"
+  # masked: "2026_05_20"
+  
+  # low_res: "2026_06_10"
+  # high_res: "2026_06_10"
+  # masked: "2026_06_10"
 
 # paths are relative from project_root_directory
 subpaths:

@@ -18,26 +18,25 @@ class BBox:
         self.ymax = float(ymax)
 
     def __repr__(self):
-        return (
-            f"BBox(xmin={self.xmin}, ymin={self.ymin}, "
-            f"xmax={self.xmax}, ymax={self.ymax})"
-        )
-
+        return (f"BBox(xmin={self.xmin}, ymin={self.ymin}, xmax={self.xmax}, ymax={self.ymax})")
+    
+    def __reduce__(self):
+        return (BBox, (self.xmin, self.ymin, self.xmax, self.ymax))
 
 class Detection:
-    def __init__(self, name, conf, bbox: BBox):
+    def __init__(self, name, conf, bbox: BBox, file: str):
+        self.file = file
         self.name = name
         self.conf = float(conf)
         self.bbox = bbox
 
     def __repr__(self):
-        return (
-            f"Detection(name='{self.name}', "
-            f"conf={self.conf}, bbox={self.bbox})"
-        )
+        return (f"Detection(file='{self.file}', name='{self.name}', conf={self.conf}, bbox={self.bbox})")
+    
+    def __reduce__(self):
+        return (Detection, (self.file, self.name, self.conf, self.bbox))
 
-
-class Sam3Inference:
+class Sam3SceneInference:
 
     def __init__(self, confidence_threshold=0.6, device="cuda"):
         """
@@ -69,7 +68,7 @@ class Sam3Inference:
         print("SAM3 model loaded successfully")
         return model
         
-    def infer(self, image, prompts, input_format="bgr", visualize=False):
+    def infer(self, image, prompts, file, input_format="bgr", visualize=False):
         """
         prompts: list of dicts
             Example:
@@ -101,7 +100,8 @@ class Sam3Inference:
             all_detections += self._convert_to_detection_format(
                 text_prompt,
                 result["boxes"],
-                result["scores"]
+                result["scores"],
+                file
             )
 
             if visualize:
@@ -110,7 +110,7 @@ class Sam3Inference:
         return all_detections
 
 
-    def _convert_to_detection_format(self, name, boxes, scores):
+    def _convert_to_detection_format(self, name, boxes, scores, file):
         detections = []
 
         for i in range(len(boxes)):
@@ -118,6 +118,7 @@ class Sam3Inference:
             conf = scores[i]
 
             detection = Detection(
+                file=file,
                 name=name,
                 conf=conf.item(),
                 bbox=BBox(
