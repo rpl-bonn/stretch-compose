@@ -14,7 +14,6 @@ from scipy.optimize import linear_sum_assignment
 import sys
 import time
 import torch
-from transformers import Owlv2ForObjectDetection, Owlv2Processor
 import traceback
 from ultralytics import YOLOWorld
 
@@ -64,6 +63,9 @@ _MODEL = None
 yolo_model = None
 sam2_predictor = None
 _gemini_predictor = None
+Owlv2ForObjectDetection = None
+Owlv2Processor = None
+_OWL_IMPORT_ERROR = None
 
 
 _SAM2_CHECKPOINT = "/home/ws/source/sam2/checkpoints/sam2.1_hiera_large.pt"
@@ -71,8 +73,23 @@ _SAM2_MODEL_CFG = "configs/sam2.1/sam2.1_hiera_l.yaml"
 
 # Only initialize models when needed to save time and GPU memory, especially since some detections only require one model. 
 def _init_owlv2():
-    global _PROCESSOR, _MODEL
-    if _MODEL is None:
+    global _PROCESSOR, _MODEL, Owlv2ForObjectDetection, Owlv2Processor, _OWL_IMPORT_ERROR
+    if _MODEL is not None and _PROCESSOR is not None:
+        return True
+
+    if Owlv2ForObjectDetection is None or Owlv2Processor is None:
+        try:
+            from transformers import Owlv2ForObjectDetection as _Owlv2ForObjectDetection
+            from transformers import Owlv2Processor as _Owlv2Processor
+
+            Owlv2ForObjectDetection = _Owlv2ForObjectDetection
+            Owlv2Processor = _Owlv2Processor
+        except Exception as exc:
+            _OWL_IMPORT_ERROR = exc
+            print(f"Warning: OWL-v2 import failed, skipping OWL-v2 detection: {exc}")
+            return False
+
+    try:
         _PROCESSOR = Owlv2Processor.from_pretrained("google/owlv2-base-patch16-ensemble")
         _MODEL = Owlv2ForObjectDetection.from_pretrained(
             "google/owlv2-base-patch16-ensemble",
@@ -81,6 +98,11 @@ def _init_owlv2():
         )
         _MODEL.to(_DEVICE)
         _MODEL.eval()
+        return True
+    except Exception as exc:
+        _OWL_IMPORT_ERROR = exc
+        print(f"Warning: OWL-v2 initialization failed, skipping OWL-v2 detection: {exc}")
+        return False
 
 def _init_yolo():
     global yolo_model
@@ -261,7 +283,8 @@ def owlv2_detect_objects() -> None:
     """
     Detect objects in images using the OWL-ViT model.
     """
-    _init_owlv2()
+    if not _init_owlv2():
+        return
     for image_file in [f for f in os.listdir(IMG_DIR) if f.startswith("frame")]:
         image = cv2.imread(os.path.join(IMG_DIR, image_file)) 
         image = np.asarray(image)
@@ -308,7 +331,8 @@ def owlv2_detect_object(obj: str, camera: str, conf: float=0.25, save_block: boo
     Returns:
         tuple[bool, dict]: Tuple containing a boolean indicating if the object was detected and a dictionary with detection information.
     """
-    _init_owlv2()
+    if not _init_owlv2():
+        return False, {}
     detected = False
     detection_dict = {}
     image_path = os.path.join(IMG_DIR, f"{camera}_image_rgb.png")
@@ -1025,7 +1049,7 @@ def sam3_detect_object(obj: str, rgb_img: np.ndarray, conf: float=0.25, save_blo
         print("SAM3 did not detect the object")
         return False, {}
 
-def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.ndarray, prompts: list[str], target_z: float | None = None) -> tuple[Pose3D, str, Pose3D]:
+def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.ndarray, prompts: list[str], target_pos: np.ndarray | None = None) -> tuple[Pose3D, str, Pose3D]:
     
     sam3_client = Sam3Client()
     tmp_path = prep_tmp_path(config)
@@ -1122,21 +1146,21 @@ def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, 
         print("No valid handle-drawer matches found.")
         return None, None, None
 
-    if target_z is not None:
-        # Pick the match whose handle projects closest to the expected world Z height.
-        # This disambiguates stacked drawers that are close in X/Y but differ in Z.
+    if target_pos is not None:
+        # Pick the match whose handle projects closest to the expected world position.
+        # Using full 3D distance disambiguates drawers that share the same Z height
+        # but differ horizontally
         _cam_mat = intrinsics_from_camera('/gripper_camera/color/camera_info')
         _fx, _fy = _cam_mat[0, 0], _cam_mat[1, 1]
         _cx, _cy = _cam_mat[0, 2], _cam_mat[1, 2]
         _tf = tf_node.get_tf_matrix("map", "gripper_camera_color_optical_frame")
         spin_until_complete(tf_node)
 
-        def _handle_world_z(m):
+        def _handle_world_dist(m):
             """
-            Given pixel and depth,
-            recover 3D world Z coordinate of handle center and compare to target Z
+            Project handle center pixel into world space and return the 3D Euclidean
+            distance to target_pos.  Returns inf when depth is invalid.
             """
-            
             #find handle center pixel
             hx = int((m.handle.bbox.xmin + m.handle.bbox.xmax) // 2)
             hy = int((m.handle.bbox.ymin + m.handle.bbox.ymax) // 2)
@@ -1144,17 +1168,34 @@ def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, 
             d = depth_img[hy, hx] / 1000.0
             if d <= 0:
                 return float('inf')
-            #get world coordinates of handle center pixel
-            #x coordinate = 
+            #unproject pixel to camera frame, then transform to world frame
             px = (hx - _cx) * d / _fx
             py = (hy - _cy) * d / _fy
-            #get world Z coordinate of handle center pixel
             world = np.array([px, py, d, 1.0]) @ _tf.T
-            return abs(world[2] - target_z)
-        
-        #pick the match with smallest handle Z error
-        best_match = min(filtered_matches, key=_handle_world_z)
-        print(f"Target Z={target_z:.3f}m — selected handle world-Z error={_handle_world_z(best_match):.3f}m")
+            return float(np.linalg.norm(world[:3] - target_pos[:3]))
+
+
+        #print distances of all matches for debugging
+        print("Match distances to target position:")
+        for m in filtered_matches:
+            dist = _handle_world_dist(m)
+            print(f"  - handle bbox=({m.handle.bbox.xmin:.1f},{m.handle.bbox.ymin:.1f},{m.handle.bbox.xmax:.1f},{m.handle.bbox.ymax:.1f}) -> distance={dist:.3f}m")
+    
+        #pick the match with smallest 3D distance to the target drawer position
+        best_match = min(filtered_matches, key=_handle_world_dist)
+        dist_error = _handle_world_dist(best_match)
+        print(f"Target pos={target_pos} — selected handle 3D distance={dist_error:.3f}m")
+
+        # Reject the best match if it is too far from the target position — the target
+        # drawer was simply not detected in this frame.  The caller's retry loop will
+        # re-capture an image and try again.
+        MAX_POS_ERROR = 0.2 #20 cm
+        if dist_error > MAX_POS_ERROR:
+            print(
+                f"[detect_drawer_handle_sam3] Best match 3D distance {dist_error:.3f}m exceeds "
+                f"threshold {MAX_POS_ERROR}m — target drawer not detected, returning None."
+            )
+            return None, None, None
     else:
         sorted_matches = sorted(
             filtered_matches,

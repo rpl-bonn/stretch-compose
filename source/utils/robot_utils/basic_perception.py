@@ -3,9 +3,11 @@ All things video and imaging.
 """
 
 from __future__ import annotations
+import time
 
 import cv2
 import numpy as np
+import os
 
 from rclpy.node import Node
 from stretch_package.stretch_images.aligned_depth2color_subscriber import AlignedDepth2ColorSubscriber
@@ -230,3 +232,76 @@ def point_cloud_from_camera_captures(depth_images: list[(np.ndarray)], topic: st
         pcd_map = pcd_camera @ map_tform_camera.T
         fused_point_clouds += pcd_map
     return fused_point_clouds
+
+def correct_lateral_offset(transform_node, joint_pose_node, handle_pose):
+    """
+    Apply a lateral correction to the robot base position based on the handle pose in the camera frame.
+    """
+    
+    _CENTERING_SIGN  = 1
+    _CENTERING_THRESH_M = 0.005   # 5 mm 
+    _CENTERING_MAX_M    = 0.05    # 5 cm
+    try:
+        tf_cam_from_map = transform_node.get_tf_matrix(
+            "gripper_camera_color_optical_frame", "map"
+        )
+        handle_in_cam = np.array([*handle_pose.coordinates, 1.0]) @ tf_cam_from_map.T
+        x_lateral = handle_in_cam[0]
+        z_depth   = handle_in_cam[2]
+        if z_depth > 0.05:
+            correction_m = float(np.clip(
+                _CENTERING_SIGN * x_lateral, -_CENTERING_MAX_M, _CENTERING_MAX_M
+            ))
+            print(f"[centering] x_lateral={x_lateral*100:.1f} cm  "
+                    f"z_depth={z_depth*100:.1f} cm  "
+                    f"translation={correction_m*100:.1f} cm")
+            if abs(correction_m) > _CENTERING_THRESH_M:
+                print(f"[centering] applying base translation of {correction_m*100:.1f} cm")
+                joint_pose_node.send_joint_pose({'translate_mobile_base': correction_m})
+                spin_until_complete(joint_pose_node)
+                time.sleep(2.0)
+        else:
+            print("[centering] skipped: handle behind camera or no valid depth")
+    except Exception as _ce:
+        print(f"[centering] warning: could not apply lateral correction: {_ce}")
+    
+def visualize_correction(transform_node, joint_pose_node, handle_pose, IMG_DIR):
+    """
+    Visualize the centering correction by projecting the handle pose onto the camera image.
+    Saves an image with the projected handle position and the image center for debugging.
+    """
+    
+    _vis_rgb = get_rgb_picture(
+        RGBImageSubscriber, joint_pose_node,
+        "/gripper_camera/color/image_rect_raw", gripper=True
+    )
+    _cam_K   = intrinsics_from_camera('/gripper_camera/color/camera_info')
+    _fx_v, _fy_v = _cam_K[0, 0], _cam_K[1, 1]
+    _cx_v, _cy_v = _cam_K[0, 2], _cam_K[1, 2]
+    _tf_v = transform_node.get_tf_matrix(
+        "gripper_camera_color_optical_frame", "map"
+    )
+    spin_until_complete(transform_node)
+    _h_cam = np.array([*handle_pose.coordinates, 1.0]) @ _tf_v.T
+    _u = int(_fx_v * (_h_cam[0] / _h_cam[2]) + _cx_v)
+    _v = int(_fy_v * (_h_cam[1] / _h_cam[2]) + _cy_v)
+    _img_h, _img_w = _vis_rgb.shape[:2]
+    _vis = cv2.cvtColor(_vis_rgb, cv2.COLOR_RGB2BGR) if _vis_rgb.shape[2] == 3 else _vis_rgb.copy()
+    # Green crosshair = where arm will aim (projected handle_pose)
+    cv2.drawMarker(_vis, (_u, _v),      (0, 255, 0),   cv2.MARKER_CROSS, 40, 2)
+    # Red crosshair  = image centre (pure straight-ahead)
+    cv2.drawMarker(_vis, (_img_w//2, _img_h//2),
+                                        (0, 0, 255),   cv2.MARKER_CROSS, 40, 2)
+    _off_px = _u - _img_w // 2
+    _off_m  = _h_cam[0]
+    cv2.putText(_vis,
+        f"aim: ({_u},{_v})  off={_off_px}px / {_off_m*100:.1f}cm",
+        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    cv2.putText(_vis, "GREEN=aim  RED=center",
+        (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    _save_path = os.path.join(IMG_DIR, "centering_aim_debug.png")
+    cv2.imwrite(_save_path, _vis)
+    print(f"[centering] aim debug image saved → {_save_path}")
+    print(f"[centering] projected aim pixel: ({_u}, {_v})  image centre: ({_img_w//2}, {_img_h//2})")
+    print(f"[centering] residual lateral offset: {_off_m*100:.1f} cm  ({_off_px} px)")
+    
