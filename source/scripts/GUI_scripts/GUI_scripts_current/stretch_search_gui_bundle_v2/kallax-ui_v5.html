@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Stretch Search GUI</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root { --bg:#0f172a; --fg:#e2e8f0; --muted:#94a3b8; --accent:#38bdf8; --green:#22c55e; --gray:#64748b; --card:#111827; --border:#1f2937; --danger:#ef4444; --yellow:#facc15; }
+    *{box-sizing:border-box}
+    body{ margin:0; padding:24px; font-family:ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; background:var(--bg); color:var(--fg); display:flex; flex-direction:column; align-items:center; gap:12px; }
+    h1{margin:0 0 6px 0; font-size:32px; letter-spacing:.3px}
+    .status{font-size:14px; color:var(--muted)}
+    .container{width:min(1180px,96vw); background:transparent;}
+    .hidden{display:none !important}
+    .panel{ background:var(--card); border:1px solid var(--border); border-radius:16px; padding:20px; position:relative; }
+    .row{display:flex; gap:10px; align-items:center; flex-wrap:wrap}
+    .btn{ display:inline-flex; align-items:center; justify-content:center; gap:10px; padding:12px 16px; border-radius:12px; cursor:pointer; border:1px solid var(--border); background:#0b1220; color:var(--fg); text-decoration:none; transition:transform .08s ease, border-color .2s ease, box-shadow .2s ease; }
+    .btn:hover{border-color:#334155; box-shadow:0 4px 20px rgba(0,0,0,.3)}
+    .btn.primary{background:var(--accent); color:#0b1220; font-weight:800}
+    .btn.danger{border-color:#7f1d1d; color:#fecaca}
+    .hint{font-size:14px; color:#b8c1d1}
+    .input{ flex:1 1 360px; min-width:240px; padding:12px 14px; border-radius:12px; border:1px solid var(--border); background:#0b1220; color:var(--fg); }
+    .search-layout{ display:grid; grid-template-columns:minmax(360px, 560px) 1fr; gap:18px; align-items:start; }
+    .shelf-wrapper{ display:flex; justify-content:center; align-items:center; margin:0 auto; }
+    .shelf{ position:relative; width:min(520px, 92vw); aspect-ratio:831/1284; background:url('kallax.png') no-repeat center/cover; border:1px solid var(--border); border-radius:14px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.45); }
+
+    /* Hit boxes calibrated for the current kallax.png image (831x1284). */
+    .compartment{ position:absolute; cursor:pointer; border-radius:8px; border:2px solid transparent; background:transparent; transition:background .25s ease, border-color .25s ease, box-shadow .25s ease, transform .12s ease; }
+    .compartment.drawer-cell{ border-radius:5px; }
+    .compartment:hover{ border-color:rgba(56,189,248,.8); background:rgba(56,189,248,.12); }
+    .compartment.searching{ background:rgba(56,189,248,.45); border-color:#38bdf8; box-shadow:0 0 0 4px rgba(56,189,248,.22), 0 0 22px rgba(56,189,248,.5); animation:pulseBlue 1s infinite alternate; }
+    /* No green shelf box when found; found state only updates text/modal. */
+    .compartment.found{ background:transparent; border-color:transparent; box-shadow:none; }
+    .compartment.not-found{ background:rgba(100,116,139,.32); border-color:#64748b; }
+    .compartment.coffee-table{ background:rgba(250,204,21,.35); border-color:#facc15; box-shadow:0 0 22px rgba(250,204,21,.45); }
+    .drawer-divider{position:absolute; left:3%; right:3%; top:50%; height:2px; background:rgba(255,255,255,.22); pointer-events:none;}
+    @keyframes pulseBlue { from{box-shadow:0 0 0 3px rgba(56,189,248,.18), 0 0 12px rgba(56,189,248,.38)} to{box-shadow:0 0 0 7px rgba(56,189,248,.28), 0 0 30px rgba(56,189,248,.62)} }
+
+    .legend{ display:grid; grid-template-columns:repeat(2, minmax(120px,1fr)); gap:8px; margin-top:12px; color:#cbd5e1; font-size:13px; }
+    .swatch{ width:14px; height:14px; border-radius:4px; display:inline-block; margin-right:8px; vertical-align:-2px; border:1px solid rgba(255,255,255,.25); }
+    .swatch.blue{background:rgba(56,189,248,.55)} .swatch.green{background:rgba(34,197,94,.58)} .swatch.gray{background:rgba(100,116,139,.5)} .swatch.yellow{background:rgba(250,204,21,.45)}
+
+    .progress-bar{display:grid; grid-template-columns:repeat(5,1fr); gap:8px; margin-bottom:12px;}
+    .step{border:1px solid var(--border); background:#0b1220; border-radius:14px; padding:10px 8px; text-align:center; color:#94a3b8; font-size:12px; min-height:62px;}
+    .step .icon{display:block; font-size:22px; margin-bottom:2px;}
+    .step.active{border-color:#38bdf8; color:#e0f2fe; background:rgba(56,189,248,.12); box-shadow:0 0 22px rgba(56,189,248,.18)}
+    .step.done{border-color:#22c55e; color:#dcfce7; background:rgba(34,197,94,.10)}
+    .step.fallback{border-color:#facc15; color:#fef9c3; background:rgba(250,204,21,.10)}
+
+    .gallery{ display:grid; grid-template-columns:repeat(3,minmax(120px,1fr)); gap:12px; margin-top:14px; }
+    .tile{ border:2px solid var(--border); border-radius:16px; overflow:hidden; background:#0b1220; cursor:pointer; transition:transform .08s ease, border-color .2s ease, box-shadow .2s ease; color:var(--fg); min-height:88px; padding:12px; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center; font-weight:700; }
+    .tile .obj-icon{font-size:26px; line-height:1; margin-bottom:6px;}
+    .tile .obj-label{font-size:14px;}
+    .tile:hover{transform:translateY(-1px); border-color:#334155; box-shadow:0 12px 36px rgba(0,0,0,.35)}
+    .tile.selected{border-color:var(--accent); box-shadow:0 0 0 3px rgba(56,189,248,.35) inset;}
+    .search-status{ margin-top:12px; color:#cbd5e1; font-weight:700; min-height:24px; line-height:1.35; }
+    .current-object{ margin-top:8px; color:#94a3b8; font-size:14px; }
+    .modal{ position:fixed; inset:0; background:rgba(0,0,0,.78); display:flex; align-items:center; justify-content:center; z-index:1000; padding:20px; }
+    .modal-content{ background:#0b1220; border:1px solid var(--border); padding:16px; border-radius:18px; max-width:92vw; max-height:92vh; box-shadow:0 24px 80px rgba(0,0,0,.6); }
+    .modal-header{ display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:12px; }
+    .modal-title{font-weight:800; color:#e2e8f0}
+    .modal-content img{ max-width:88vw; max-height:76vh; display:block; border-radius:12px; border:1px solid var(--border); background:#111827; }
+    @media (max-width: 900px){ .search-layout{grid-template-columns:1fr} .gallery{grid-template-columns:repeat(2,minmax(120px,1fr))} .progress-bar{grid-template-columns:repeat(2,1fr)} }
+  </style>
+</head>
+<body>
+  <h1>Stretch Search GUI</h1>
+  <div class="status" id="status">Server offline</div>
+  <div class="container">
+    <div class="panel">
+      <div class="row" style="justify-content:space-between; margin-bottom:14px;">
+        <div>
+          <div class="hint">Select or type an object. The robot searches open shelves first, then the door/drawers, then the coffee table.</div>
+          <div class="current-object" id="currentObject">No object selected</div>
+        </div>
+        <button id="welcomeBtn" class="btn">Welcome</button>
+      </div>
+
+      <div class="progress-bar" id="progressBar">
+        <div class="step" data-step="open"><span class="icon">🔎</span>Open shelves</div>
+        <div class="step" data-step="door"><span class="icon">🚪</span>White door</div>
+        <div class="step" data-step="black"><span class="icon">🗄️</span>Black drawers</div>
+        <div class="step" data-step="white"><span class="icon">🗄️</span>White drawers</div>
+        <div class="step" data-step="coffee"><span class="icon">☕</span>Coffee table</div>
+      </div>
+
+      <div class="search-layout">
+        <div>
+          <div class="shelf-wrapper">
+            <div class="shelf" id="shelf">
+              <!-- Open / door / basket compartments: calibrated to the current kallax.png -->
+              <div class="compartment" data-id="top_left_open"      data-group="open_shelves" title="Top-left open shelf"     style="top:12.5%; left:22.9%; width:26.4%; height:16.3%;"></div>
+              <div class="compartment" data-id="top_right_open"     data-group="open_shelves" title="Top-right open shelf"    style="top:12.5%; left:51.2%; width:27.6%; height:16.3%;"></div>
+
+              <div class="compartment" data-id="middle_left_open"   data-group="open_shelves" title="Middle-left open shelf"  style="top:31.8%; left:22.9%; width:26.5%; height:17.4%;"></div>
+              <div class="compartment" data-id="white_door"         data-group="white_door"   title="White/rattan door"      style="top:31.8%; left:51.2%; width:27.8%; height:17.4%;"></div>
+
+              <!-- Four real drawer faces: two white drawers on the left, two black drawers on the right -->
+              <div class="compartment drawer-cell" data-id="white_drawer_upper" data-group="white_drawers" title="White drawer upper" style="top:50.7%; left:22.9%; width:26.8%; height:8.0%;"></div>
+              <div class="compartment drawer-cell" data-id="white_drawer_lower" data-group="white_drawers" title="White drawer lower" style="top:59.0%; left:22.9%; width:26.8%; height:8.0%;"></div>
+
+              <div class="compartment drawer-cell" data-id="black_drawer_upper" data-group="black_drawers" title="Black drawer upper" style="top:50.7%; left:51.2%; width:28.0%; height:8.0%;"></div>
+              <div class="compartment drawer-cell" data-id="black_drawer_lower" data-group="black_drawers" title="Black drawer lower" style="top:59.0%; left:51.2%; width:28.0%; height:8.0%;"></div>
+
+              <div class="compartment" data-id="bottom_left_open"   data-group="open_shelves" title="Bottom-left basket"      style="top:69.7%; left:22.9%; width:26.8%; height:17.8%;"></div>
+              <div class="compartment" data-id="bottom_right_open"  data-group="open_shelves" title="Bottom-right basket"     style="top:69.7%; left:51.2%; width:28.0%; height:17.8%;"></div>
+            </div>
+          </div>
+          <div class="legend">
+            <div><span class="swatch blue"></span>Searching</div>
+            <div><span class="swatch gray"></span>Searched / not found</div>
+            <div><span class="swatch yellow"></span>Coffee table fallback</div>
+          </div>
+        </div>
+        <div>
+          <div class="row" style="gap:10px; margin-bottom:12px;">
+            <input id="objectInput" class="input" type="text" placeholder="e.g., water bottle, cup, keys, remote" />
+            <button class="btn primary" id="runBtn">🔎 Search</button>
+          </div>
+          <div id="gallery" class="gallery"></div>
+          <div id="searchStatus" class="search-status">Idle</div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div id="imageModal" class="modal hidden">
+    <div class="modal-content">
+      <div class="modal-header">
+        <div class="modal-title">Detection result</div>
+        <button class="btn" onclick="closeImageModal()">Close</button>
+      </div>
+      <img id="detectionImage" src="" alt="Latest detection output" />
+    </div>
+  </div>
+  <script>
+    const SERVER = "http://127.0.0.1:5007";
+    const statusEl = el("status");
+    const searchStatus = el("searchStatus");
+    const currentObject = el("currentObject");
+    const inputEl = el("objectInput");
+    let lastImageVersionShown = 0;
+    const OBJECTS = [
+      { id:"water_bottle", label:"Water Bottle", icon:"🍾", aliases:["water bottle","bottle"] },
+      { id:"cup", label:"Cup", icon:"☕", aliases:["cup","mug"] },
+      { id:"book", label:"Book", icon:"📘", aliases:["book"] },
+      { id:"keys", label:"Keys", icon:"🔑", aliases:["keys","key"] },
+      { id:"remote", label:"Remote", icon:"📺", aliases:["remote","remote control"] },
+      { id:"phone", label:"Phone", icon:"📱", aliases:["phone","mobile phone"] },
+      { id:"wallet", label:"Wallet", icon:"👛", aliases:["wallet"] },
+      { id:"glasses", label:"Glasses", icon:"👓", aliases:["glasses"] },
+      { id:"watering_can", label:"Watering Can", icon:"💧", aliases:["watering can"] },
+      { id:"toy", label:"Toy", icon:"🧸", aliases:["toy","duck"] },
+      { id:"plant", label:"Plant", icon:"🪴", aliases:["plant"] },
+      { id:"picture_frame", label:"Picture Frame", icon:"🖼️", aliases:["picture frame","frame"] },
+    ];
+    buildGallery(); checkStatus(); updateSearchProgress();
+    setInterval(checkStatus, 2000); setInterval(updateSearchProgress, 700);
+
+    function buildGallery(){
+      const gallery = el("gallery");
+      OBJECTS.forEach(item => {
+        const card = document.createElement("button");
+        card.className = "tile"; card.type = "button"; card.setAttribute("aria-label", item.label);
+        card.innerHTML = `<span class="obj-icon">${item.icon}</span><span class="obj-label">${item.label}</span>`;
+        card.addEventListener("click", () => { document.querySelectorAll(".tile").forEach(t => t.classList.remove("selected")); card.classList.add("selected"); inputEl.value = item.aliases[0]; runSearch(item.id, false); });
+        gallery.appendChild(card);
+      });
+    }
+    function checkStatus(){ fetch(SERVER + "/status").then(r => r.json()).then(d => statusEl.textContent = d.running ? "Robot is busy…" : "Idle").catch(() => statusEl.textContent = "Server offline"); }
+    function normalizeText(s){ return (s || "").toLowerCase().trim().replace(/\s+/g, " "); }
+    function findObjectByInput(input){ const q = normalizeText(input); if(!q) return null; for(const item of OBJECTS){ if(item.aliases.some(a => normalizeText(a) === q)) return item; } for(const item of OBJECTS){ if(item.aliases.some(a => normalizeText(a).startsWith(q))) return item; } for(const item of OBJECTS){ if(item.aliases.some(a => normalizeText(a).includes(q))) return item; } return null; }
+    function runSearch(objectValue=null, raw=false){
+      const txt = objectValue || inputEl.value.trim();
+      if(!txt){ searchStatus.textContent = "Type an object name first."; return; }
+      resetShelfClasses(false); resetProgressBar();
+      const item = raw ? null : findObjectByInput(txt);
+      let payload;
+      if(item && !objectValue){ payload = { object: item.id }; selectTile(item.label); searchStatus.textContent = "Searching for: " + item.label; }
+      else if(objectValue && !raw){ payload = { object: objectValue }; searchStatus.textContent = "Searching for: " + txt.replace(/_/g, " "); }
+      else { payload = { object: txt, raw: true }; searchStatus.textContent = "Searching for: " + txt; }
+      fetch(SERVER + "/search", { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify(payload) })
+        .then(async r => { const data = await r.json().catch(() => ({})); if(r.status === 409) searchStatus.textContent = "Robot is busy…"; if(!r.ok && data.message) searchStatus.textContent = data.message; checkStatus(); })
+        .catch(err => { console.error(err); searchStatus.textContent = "Could not contact server."; });
+    }
+    function selectTile(label){ document.querySelectorAll(".tile").forEach(t => t.classList.toggle("selected", t.textContent.trim().endsWith(label))); }
+    function updateSearchProgress(){
+      fetch(SERVER + "/progress").then(r => r.json()).then(data => {
+        if(data.message) searchStatus.textContent = data.message;
+        if(data.object || data.object_de){ currentObject.textContent = "Object: " + (data.object || "-") + (data.object_de ? "  |  German audio: " + data.object_de : ""); }
+        updateShelfColors(data); updateProgressBar(data); maybeShowDetectionImage(data);
+      }).catch(() => {});
+    }
+    function updateShelfColors(data){
+      const state = data.state || "idle"; const comp = data.compartment || "";
+      if(state !== "found") resetShelfClasses(true);
+      if(!comp) return;
+      const targets = document.querySelectorAll(`.compartment[data-id="${comp}"], .compartment[data-group="${comp}"]`);
+      if(!targets.length) return;
+      targets.forEach(target => {
+        if(state === "searching" || state === "started") target.classList.add("searching");
+        else if(state === "found"){ resetShelfClasses(false); }
+        else if(state === "not_found") target.classList.add("not-found");
+        else if(state === "coffee_table") target.classList.add("coffee-table");
+      });
+    }
+    function resetShelfClasses(keepFound){ document.querySelectorAll(".compartment").forEach(d => { if(keepFound && d.classList.contains("found")) return; d.classList.remove("searching", "not-found", "coffee-table"); if(!keepFound) d.classList.remove("found"); }); }
+    function stepForCompartment(comp){
+      if(["top_left_open","top_right_open","middle_left_open","bottom_left_open","bottom_right_open","open_shelves"].includes(comp)) return "open";
+      if(comp === "white_door") return "door";
+      if(["black_drawers","black_drawer_upper","black_drawer_lower"].includes(comp)) return "black";
+      if(["white_drawers","white_drawer_upper","white_drawer_lower"].includes(comp)) return "white";
+      if(comp === "coffee_table") return "coffee";
+      return "";
+    }
+    function resetProgressBar(){ document.querySelectorAll(".step").forEach(s => s.classList.remove("active","done","fallback")); }
+    function updateProgressBar(data){
+      const step = stepForCompartment(data.compartment || "");
+      if(!step) return;
+      resetProgressBar();
+      const order = ["open","door","black","white","coffee"];
+      const idx = order.indexOf(step);
+      order.forEach((name, i) => {
+        const elStep = document.querySelector(`.step[data-step="${name}"]`);
+        if(!elStep) return;
+        if(i < idx && data.state !== "idle") elStep.classList.add("done");
+        if(i === idx){ elStep.classList.add(data.state === "coffee_table" ? "fallback" : "active"); if(data.state === "found") elStep.classList.add("done"); }
+      });
+    }
+    function maybeShowDetectionImage(data){ const version = Number(data.image_version || 0); if(data.state === "found" && version > lastImageVersionShown){ lastImageVersionShown = version; el("detectionImage").src = SERVER + "/latest_detection_image?t=" + Date.now(); el("imageModal").classList.remove("hidden"); } }
+    function closeImageModal(){ el("imageModal").classList.add("hidden"); }
+    el("runBtn").addEventListener("click", () => { const txt = inputEl.value.trim(); const item = findObjectByInput(txt); if(item) runSearch(item.id, false); else runSearch(txt, true); });
+    inputEl.addEventListener("keydown", e => { if(e.key === "Enter"){ e.preventDefault(); const txt = inputEl.value.trim(); const item = findObjectByInput(txt); if(item) runSearch(item.id, false); else runSearch(txt, true); } });
+    el("welcomeBtn").addEventListener("click", () => { fetch(SERVER + "/audio", { method:"POST" }).then(r => r.json()).catch(console.error); });
+    function el(id){ return document.getElementById(id); }
+  </script>
+</body>
+</html>

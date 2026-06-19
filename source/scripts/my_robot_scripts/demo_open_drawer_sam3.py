@@ -124,8 +124,7 @@ def execute_search(drawer_id: int) -> bool:
         # Skip if no handle detected
         
         
-        target_z = drawer_center.coordinates[2]
-        handle_pose, drawer_type, _ = detect_drawer_handle_sam3(transform_node, depth_img, rgb_img, prompts, target_z=target_z)
+        handle_pose, drawer_type, _ = detect_drawer_handle_sam3(transform_node, depth_img, rgb_img, prompts, target_pos=drawer_center.coordinates)
         print("----------------------------------------------------------")
         print(f"HANDLE POSE: {handle_pose}")
         print("----------------------------------------------------------")
@@ -135,7 +134,7 @@ def execute_search(drawer_id: int) -> bool:
             print("No handle detected, retrying...")
             rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, "/gripper_camera/color/image_rect_raw", gripper=True)
             depth_img = get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, "/gripper_camera/aligned_depth_to_color/image_raw", gripper=True)
-            handle_pose, drawer_type, _ = detect_drawer_handle_sam3(transform_node, depth_img, rgb_img, prompts, target_z=target_z)
+            handle_pose, drawer_type, _ = detect_drawer_handle_sam3(transform_node, depth_img, rgb_img, prompts, target_pos=drawer_center.coordinates)
         
         
         handle_pose.set_rot_from_direction(-front_normal)
@@ -146,6 +145,28 @@ def execute_search(drawer_id: int) -> bool:
         # Open drawer and check for object inside
         if drawer_type == "front":
             move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, handle_pose, 0.0, 0.0, np.pi/2, 0.09, stow=False, grasp=True)
+
+            # Testing to re-detect handle from the new robot pos so that correct_lateral_offset
+            # works from a fresh measurement rather than a pose that was computed from a
+            # different viewpoint
+            rgb_img_refine = get_rgb_picture(RGBImageSubscriber, joint_pose_node, "/gripper_camera/color/image_rect_raw", gripper=True)
+            depth_img_refine = get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, "/gripper_camera/aligned_depth_to_color/image_raw", gripper=True)
+            handle_pose_refine, _, _ = detect_drawer_handle_sam3(transform_node, depth_img_refine, rgb_img_refine, prompts, target_pos=drawer_center.coordinates)
+            if handle_pose_refine is not None:
+                print(f"[centering] refreshed handle_pose: {handle_pose_refine.coordinates} (was {handle_pose.coordinates})")
+                handle_pose = handle_pose_refine
+            else:
+                print("[centering] re-detection failed, keeping previous handle_pose")
+
+            correct_lateral_offset(transform_node, joint_pose_node, handle_pose)
+
+            
+            try:
+               visualize_correction(transform_node, joint_pose_node, handle_pose)
+            except Exception as _ve:
+                print(f"[centering] visualisation failed (non-critical): {_ve}")
+            # ────────────────────────────────────────────────────────────────
+
             pull_drawer(joint_pose_node)
             time.sleep(2.0)
             look_into_drawer(joint_pose_node, handle_pose)
@@ -175,7 +196,7 @@ def execute_search(drawer_id: int) -> bool:
 
     return success
   
-     
+
 if __name__ == "__main__":
     # docker run -p 5004:5004 --gpus all -it craiden/yolodrawer:v1.0 python3 app.py
     args = os.sys.argv[1]

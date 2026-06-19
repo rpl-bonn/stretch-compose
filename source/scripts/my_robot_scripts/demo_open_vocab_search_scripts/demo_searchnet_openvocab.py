@@ -36,7 +36,7 @@ VIS_BLOCK = False
 SAVE_BLOCK = True
 DEEPSEEK = False
 NO_PROPOSALS = 3
-OBJECT = "tennis ball"
+OBJECT = "ball"
 HINT = ""
 ROBOT_SSH = "hello-robot@192.168.50.34"
 
@@ -73,10 +73,10 @@ class TransformManager:
 
 
 def say_on_robot(text: str) -> None:
-    subprocess.run(["ssh", ROBOT_SSH, "espeak  -v en -s 120 -p 40", f'"{text}"'], timeout=20)
+    subprocess.run(["ssh", ROBOT_SSH, "espeak  -v de+f3 -s 110 -p 40", f'"{text}"'], timeout=20)
 
 
-def execute_search(OBJECT: str) -> bool:
+def execute_search(OBJECT: str, OBJECT_DE: str) -> bool:
     """
     Execute the search and grasping of an object using the robot.
     This function initializes the necessary nodes, performs the search using DeepSeek and SearchNet,
@@ -84,6 +84,7 @@ def execute_search(OBJECT: str) -> bool:
 
     Args:
         OBJECT (str): Object to search for and grasp.
+        OBJECT_DE (str): German name of the object to search for.
 
     Returns:
         bool: True if the search and grasp was successful, False otherwise.
@@ -114,6 +115,7 @@ def execute_search(OBJECT: str) -> bool:
         with open(os.path.join(GRAPH_DIR, "scene.json"), "r") as file:
             scene_data = json.load(file)
             
+        say_on_robot(f"Hallo! Suche nach {OBJECT_DE} gestartet.")
             
             
     
@@ -131,41 +133,42 @@ def execute_search(OBJECT: str) -> bool:
 
         # B: navigate to bookshelf(ves) and detect with SAM3
         # Pan angles to sweep across the shelf (positive = left on Stretch). Tune as needed.
-        # HEAD_TILT = -0.2
-        # HEAD_PAN_SWEEP = [0.0, 0.3, 0.6]
-        # if not detected:
-        #     bookshelf_plans = searchnet_planning.plan_furniture_search_by_label("shelf", scene_data)
-        #     for target_pos, furniture, front_normal, body_pose, furniture_id in bookshelf_plans:
-        #         if furniture_id in checked_furniture_ids:
-        #             print(f"Already checked bookshelf ({furniture_id}).")
-        #             continue
-        #         checked_furniture_ids.append(furniture_id)
-        #         print(f"Searching for {OBJECT} on {furniture} ({furniture_id}) at {target_pos}")
-        #         move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
+        HEAD_TILT = -0.2
+        HEAD_PAN_SWEEP = [0.0, 0.3, 0.6]
+        if not detected:
+            print("Checking tables with SAM3...")
+            bookshelf_plans = searchnet_planning.plan_furniture_search_by_label("kitchen counter", scene_data)
+            for target_pos, furniture, front_normal, body_pose, furniture_id in bookshelf_plans:
+                if furniture_id in checked_furniture_ids:
+                    print(f"Already checked bookshelf ({furniture_id}).")
+                    continue
+                checked_furniture_ids.append(furniture_id)
+                print(f"Searching for {OBJECT} on {furniture} ({furniture_id}) at {target_pos}")
+                move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
 
-        #         # Sweep head pan until object is detected or all angles exhausted
-        #         for pan_angle in HEAD_PAN_SWEEP:
-        #             print(f"Scanning shelf at pan={pan_angle:.2f} rad")
-        #             joint_pose_node.send_joint_pose({'joint_head_pan': pan_angle, 'joint_head_tilt': HEAD_TILT})
-        #             spin_until_complete(joint_pose_node)
-        #             time.sleep(2.0)  # Small delay to ensure images are updated
+                # Sweep head pan until object is detected or all angles exhausted
+                for pan_angle in HEAD_PAN_SWEEP:
+                    print(f"Scanning shelf at pan={pan_angle:.2f} rad")
+                    joint_pose_node.send_joint_pose({'joint_head_pan': pan_angle, 'joint_head_tilt': HEAD_TILT})
+                    spin_until_complete(joint_pose_node)
+                    time.sleep(2.0)  # Small delay to ensure images are updated
 
-        #             rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
-        #             get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
-        #             detected, detection_dict = sam3_detect_object(OBJECT, rgb_img, save_block=SAVE_BLOCK)
-        #             time.sleep(2.0)  # Small delay to ensure images are processed
-        #             if detected:
-        #                 print(f"Found {OBJECT} at head pan={pan_angle:.2f} rad")
-        #                 break
+                    rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
+                    get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
+                    detected, detection_dict = sam3_detect_object(OBJECT, rgb_img, save_block=SAVE_BLOCK)
+                    time.sleep(2.0)  # Small delay to ensure images are processed
+                    if detected:
+                        print(f"Found {OBJECT} at head pan={pan_angle:.2f} rad")
+                        break
 
-        #         if detected:
-        #             say_on_robot(f"Reporting: {OBJECT} found on {furniture}")
-        #             # say_on_robot(f"Meldung: {OBJECT} gefunden auf {furniture}")
-        #             break
-        #         else:
-        #             # say_on_robot(f"Meldung: Ich konnte Ihr {OBJECT} leider nicht bei {furniture} finden.")
-        #             say_on_robot(f"Reporting: I could not sadly find your {OBJECT} at {furniture}. Let me check the closed spaces like drawers and cabinets.")
-        #             break
+                if detected:
+                    # say_on_robot(f"Reporting: {OBJECT} found on {furniture}")
+                    say_on_robot(f"{OBJECT_DE} gefunden auf {furniture}")
+                    break
+                else:
+                    # say_on_robot(f"Reporting: I could not find your {OBJECT} at {furniture}. Checking closed spaces.")
+                    say_on_robot(f"{OBJECT_DE} nicht gefunden auf {furniture}. Ich überprüfe jetzt geschlossene Räume.")
+                    break
         #---skipping this part for now, as it is not fully implemented and we want to focus on testing the drawer search---
         
         # # B: Object is not in the scene graph    
@@ -219,7 +222,8 @@ def execute_search(OBJECT: str) -> bool:
         # D: Object is not in open spaces
         if not detected:
             #checked_furniture_ids = ["8", "16", "9"]
-            drawers_id_to_check = [14,15]
+            
+            drawers_id_to_check = [9,10,11,12]
             print(f"Object {OBJECT} not found in open spaces. Searching in concealed spaces...")
             connections = graph_data["connections"]
             
@@ -243,8 +247,7 @@ def execute_search(OBJECT: str) -> bool:
                 rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, "/gripper_camera/color/image_rect_raw", gripper=True)
                 depth_img = get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, "/gripper_camera/aligned_depth_to_color/image_raw", gripper=True)
                 try:
-                    target_z = drawer_center.coordinates[2]
-                    handle_pose, drawer_type, _ = detect_drawer_handle_sam3(transform_node, depth_img, rgb_img, prompts, target_z=target_z)
+                    handle_pose, drawer_type, _ = detect_drawer_handle_sam3(transform_node, depth_img, rgb_img, prompts, target_pos=drawer_center.coordinates)
                     if handle_pose is None:
                         # print(f"No handle detected for drawer {drawer_id}. Skipping.")
                         
@@ -254,7 +257,7 @@ def execute_search(OBJECT: str) -> bool:
                             time.sleep(5.0)
                             rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, "/gripper_camera/color/image_rect_raw", gripper=True)
                             depth_img = get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, "/gripper_camera/aligned_depth_to_color/image_raw", gripper=True)
-                            handle_pose, drawer_type, _ = detect_drawer_handle_sam3(transform_node, depth_img, rgb_img, prompts, target_z=target_z)
+                            handle_pose, drawer_type, _ = detect_drawer_handle_sam3(transform_node, depth_img, rgb_img, prompts, target_pos=drawer_center.coordinates)
                 except Exception as e:
                     continue
                 print(f"OPENING DIRECTION: {drawer_type}")
@@ -266,6 +269,9 @@ def execute_search(OBJECT: str) -> bool:
                 # Open drawer and check for object inside
                 if drawer_type == "front":
                     move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, handle_pose, 0.0, 0.0, np.pi/2, 0.09, stow=False, grasp=True)
+                    time.sleep(2.0) # Wait for the robot to be in position
+                    correct_lateral_offset(transform_node, joint_pose_node, handle_pose)
+                    visualize_correction(transform_node, joint_pose_node, handle_pose, IMG_DIR)
                     pull_drawer(joint_pose_node)
                     look_into_drawer(joint_pose_node, handle_pose)
                     #give time to look into drawer
@@ -285,7 +291,8 @@ def execute_search(OBJECT: str) -> bool:
                     
                     print(f"Found {OBJECT} in door {drawer_id} in {furniture_name}.")
                     time.sleep(5.0)
-                    say_on_robot(f"Reporting: {OBJECT} found in {furniture_name} in the {drawer_type} door.")
+                    # say_on_robot(f"Reporting: {OBJECT} found in {furniture_name} in the {drawer_type} door.")
+                    say_on_robot(f"{OBJECT_DE} gefunden in {furniture_name} in der Tür.")
                     # Close drawer before moving to the next one    
                     time.sleep(5.0)
                     push(joint_pose_node, handle_pose.coordinates[2]-0.12)
@@ -300,7 +307,9 @@ def execute_search(OBJECT: str) -> bool:
                     break
                 else:
                     print(f"{OBJECT} not found in {furniture_name} in drawer {drawer_id}.")
-                    say_on_robot(f"Reporting: I could not find your {OBJECT} in {furniture_name} in the {drawer_type} door. Let me check the next possible location.")
+                    # say_on_robot(f"Reporting: I could not find your {OBJECT} in {furniture_name} in the {drawer_type} door. Let me check the next possible location.")
+                    #check next location
+                    say_on_robot(f"{OBJECT_DE} nicht gefunden in {furniture_name} in der Tür. Ich überprüfe den nächsten möglichen Ort.")
                     # Close drawer before moving to the next one    
                     time.sleep(5.0)
                     push(joint_pose_node, handle_pose.coordinates[2]-0.12)
