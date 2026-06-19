@@ -1,22 +1,19 @@
 {
     "name": "ROS Development Container",
-    "privileged": true,
+    // Compose mode: VS Code attaches to the "ros2-main" service defined in the
+    // workspace-root docker-compose.yml (two levels up from this file).
+    "dockerComposeFile": ["../../docker-compose.yml"],
+    "service": "ros2-main",
+    "workspaceFolder": "/home/ws",
     "remoteUser": "${localEnv:USERNAME}",
-    "build": {
-        "dockerfile": "Dockerfile",
-        "args": {
-            "USERNAME": "${localEnv:USERNAME}",
-            "DOCKER_REPO": "osrf/ros",
-            "ROS_DISTRO": "humble",
-            "IMAGE_SUFFIX": "-desktop-full"
-        }
-    },
-    // Add this to prevent auto-injection of features  AI SLOP- prevents devcontainer to add stuff which breaks our code s it runs before our stuff
+    // Only bring up this service on "Reopen in Container"; start the rest of the
+    // stack (sam3, scene-graph) from the terminal when you need it.
+    "runServices": ["ros2-main"],
+    // Run the service's own command (sleep infinity) instead of overriding it.
+    "overrideCommand": false,
+    // Prevent auto-injection of features (they run before our setup and break it).
     "features": {},
     "overrideFeatureInstallOrder": [],
-
-    "workspaceFolder": "/home/ws",
-    "workspaceMount": "source=${localWorkspaceFolder},target=/home/ws,type=bind",
     "customizations": {
         "vscode": {
             "extensions":[
@@ -29,35 +26,6 @@
             ]
         }
     },
-    "containerEnv": {
-        "DISPLAY": "${env:DISPLAY}",
-        "ROS_LOCALHOST_ONLY": "0",
-        "ROS_DOMAIN_ID": "1",
-        "PYTHONPATH": "${PYTHONPATH}:/home/ws:/home/ws/source",
-        "QT_X11_NO_MITSHM": "1",
-        "LIBGL_ALWAYS_INDIRECT": "0",
-        "NVIDIA_DRIVER_CAPABILITIES": "all",
-        "NVIDIA_VISIBLE_DEVICES": "all"
-    },
-    "runArgs": [
-        "--net=host",
-        "-e", "DISPLAY=${localEnv:DISPLAY}",
-        "--gpus", "all",
-        "-e", "NVIDIA_DRIVER_CAPABILITIES=all",
-        "-e", "NVIDIA_VISIBLE_DEVICES=all",
-        "--device", "/dev/snd", 
-        "-e", "PULSE_SERVER=unix:${localEnv:XDG_RUNTIME_DIR}/pulse/native",
-        "-v", "${localEnv:XDG_RUNTIME_DIR}/pulse/native:${localEnv:XDG_RUNTIME_DIR}/pulse/native",
-        "-v", "${localEnv:HOME}/.config/pulse/cookie:/root/.config/pulse/cookie",
-        "-e", "XDG_RUNTIME_DIR=${localEnv:XDG_RUNTIME_DIR}",
-        "-e", "XAUTHORITY=${localEnv:XAUTHORITY}"
-    ],
-    "mounts": [
-        "source=/tmp/.X11-unix,target=/tmp/.X11-unix,type=bind,consistency=cached",
-        "source=/dev/dri,target=/dev/dri,type=bind,consistency=cached",
-        "source=${localEnv:HOME}/.ssh,target=/home/${localEnv:USERNAME}/.ssh,type=bind",
-        "source=${localEnv:HOME}/.Xauthority,target=${localEnv:HOME}/.Xauthority,type=bind"
-    ],
     "initializeCommand": "sh ./.devcontainer/initialize.sh",
     "postCreateCommand": "sh ./.devcontainer/postCreate.sh"
 }
