@@ -20,7 +20,7 @@ from utils import recursive_config
 from utils.robot_utils.basic_movement import move_arm, get_odom
 from utils.robot_utils.basic_perception import get_depth_picture, get_rgb_picture
 from utils.time import convert_time
-from utils.zero_shot_object_detection_sam3 import get_cloud_from_gripper_detection, yolo_detect_object, sam_detect_object
+from utils.zero_shot_object_detection_sam3 import get_cloud_from_gripper_detection, sam3_detect_object, sam_detect_object
 
 
 def add_coordinate_system(
@@ -548,9 +548,9 @@ def collect_dynamic_point_cloud(
        
         try:
             t6 = time.time()
-            det, dict = yolo_detect_object(obj, "gripper", save_block=True, use_gemini=True)
+            det, dict = sam3_detect_object(obj, rgb, save_block=True)
             t7 = time.time()
-            print(f"YOLO FULL FUNC detection time: {t7 - t6:.2f}s")
+            print(f"SAM3 FULL FUNC detection time: {t7 - t6:.2f}s")
             if det is False:
                 print(f"Failed detecting object in view {i}")
                 continue
@@ -581,6 +581,12 @@ def collect_dynamic_point_cloud(
             pcds_down.append(pcd_down)
         except Exception as e:
             print(f"Failed detecting object in view {i}: {e}")
+
+    if len(pcds_masked) == 0 or len(pcds_down) == 0:
+        raise RuntimeError(
+            f"'{obj}' was not detected in any of the {len(angled_view_poses)} gripper views; "
+            f"cannot build the dynamic object point cloud."
+        )
 
     # Full registration
     max_corr_coarse = voxel_size * 5
