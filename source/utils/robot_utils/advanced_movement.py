@@ -4,8 +4,10 @@ import time
 import numpy as np
 import open3d as o3d
 
+import tf2_ros
 from utils.robot_utils.global_parameters import *
-from utils.robot_utils.basic_perception import check_object_distance
+from utils.robot_utils.basic_perception import check_object_distance, correct_offsets_base_frame, visualize_correction
+
 from utils.robot_utils.basic_movement import *
 from scipy.spatial.transform import Rotation
 from utils import vis
@@ -148,6 +150,51 @@ def pull_drawer(pose_node: JointPoseController):
     spin_until_complete(pose_node)
     time.sleep(2.0)
 
+def pull_and_check_drawer(pose_node: JointPoseController, transform_node: FrameTransformer, measure_handle, IMG_DIR,
+                          lateral_tol: float = 0.015, max_corrections: int = 1) -> None:
+    """
+    Pull a drawer open with a mid-approach centering check.
+    """
+
+    set_gripper(pose_node, 0.4)
+    pull_pose_start = {'wrist_extension': (0.35, 85.0)} #0.55 is max
+    pose_node.send_joint_pose(pull_pose_start)
+    spin_until_complete(pose_node)
+    print("Reached halfway pose, checking lateral offset to handle")
+    time.sleep(2.0)
+
+    for attempt in range(max_corrections):
+        handle_pose = measure_handle()
+        if handle_pose is None:
+            print(f"[pull] halfway re-detection failed (attempt {attempt+1}), keeping current alignment")
+            break
+        err = correct_offsets_base_frame(transform_node, pose_node, handle_pose)
+        if err is None:
+            print(f"[pull] measurement had no valid depth (attempt {attempt+1}), keeping current alignment")
+            break
+        if abs(err[0]) <= lateral_tol:
+            print(f"[pull] centered within {lateral_tol*100:.1f} cm, continuing pull")
+            break
+    else:
+        print(f"[pull] still {err[0]*100:+.1f} cm off after {max_corrections} corrections, pulling anyway")
+    
+    if handle_pose is not None:
+        try:
+            visualize_correction(transform_node, pose_node, handle_pose, IMG_DIR=IMG_DIR)
+        except Exception as vis_error:
+            print(f"[pull] visualisation failed (non-critical): {vis_error}")
+    pull_pose_max = {'wrist_extension': (0.55, 85.0)}
+    pose_node.send_joint_pose(pull_pose_max)
+    spin_until_complete(pose_node)
+    time.sleep(2.0)
+    # Close gripper to grab handle and pull drawer
+    set_gripper(pose_node, -0.01)
+    pull_pose_end = {'wrist_extension': 0.05}
+    pose_node.send_joint_pose(pull_pose_end)
+    spin_until_complete(pose_node)
+    time.sleep(2.0)
+
+
 
 def push(pose_node: JointPoseController, height: float) -> None:
     """
@@ -179,7 +226,7 @@ def push(pose_node: JointPoseController, height: float) -> None:
 
 def open_door(pose_node: JointPoseController):
     """
-    Exectue a pulling motion (e.g. for drawers).
+    Exectue a pulling motion (e.g. for doors).
     This function moves the arm in front of the drawer handle, opens the gripper, moves the arm to the handle, closes the gripper,
     and pulls the drawer open.
 
@@ -191,32 +238,35 @@ def open_door(pose_node: JointPoseController):
     Returns:
         Pose3D: end pose of the gripper after pulling
     """
-    # set_gripper(pose_node, 0.4)
     open_pose_start = {'wrist_extension': 0.25, 'joint_wrist_yaw': 0.3}
     pose_node.send_joint_pose(open_pose_start)
     spin_until_complete(pose_node)
-    time.sleep(1.0)
-    open_pose_start = { 'joint_wrist_yaw': 0.1}
-    pose_node.send_joint_pose(open_pose_start)
-    spin_until_complete(pose_node)
-    time.sleep(1.0)
+   
     open_pose_start = {'wrist_extension': 0.01}
     pose_node.send_joint_pose(open_pose_start)
     spin_until_complete(pose_node)
-    time.sleep(1.0)
-    open_pose_start = {'joint_wrist_yaw': 0.5}
+  
+    open_pose_start = {'wrist_extension': 0.0}
     pose_node.send_joint_pose(open_pose_start)
     spin_until_complete(pose_node)
-    time.sleep(1.0)
-    open_pose_start = {'wrist_extension': 0.001}
-    pose_node.send_joint_pose(open_pose_start)
+    
+    push = {'rotate_mobile_base': np.radians(70), 'joint_wrist_yaw': 1.6}
+    pose_node.send_joint_pose(push)
     spin_until_complete(pose_node)
-    time.sleep(1.0)
-    open_pose_start = {'wrist_extension': 0.001}
-    pose_node.send_joint_pose(open_pose_start)
+
+    push = {'rotate_mobile_base': np.radians(70), 'joint_wrist_yaw': 1.8}
+    pose_node.send_joint_pose(push)
     spin_until_complete(pose_node)
-    time.sleep(1.0)
-    open_pose_end = {'joint_wrist_yaw': 1.13, 'joint_wrist_pitch': -1.4}
+
+    push = {'rotate_mobile_base': np.radians(30)}
+    pose_node.send_joint_pose(push)
+    spin_until_complete(pose_node)
+
+    open_pose_end = {'joint_wrist_yaw': 1.13}
+    pose_node.send_joint_pose(open_pose_end)
+    spin_until_complete(pose_node)
+
+    open_pose_end = {'joint_wrist_pitch': -1.4}
     pose_node.send_joint_pose(open_pose_end)
     spin_until_complete(pose_node)
     
@@ -384,20 +434,46 @@ def find_new_grasp_dynamically(
     # Downsample point clouds
     pcd_obj = pcd_obj.voxel_down_sample(0.005)
     pcd_env = pcd_env.voxel_down_sample(0.02)
-    
+
+
+
+    #grasp debugging
+    DEBUG_GRASP = True
+    if DEBUG_GRASP:
+        o3d.io.write_point_cloud("/home/ws/data/images/grasp_pcd_obj.ply", pcd_obj)
+        o3d.io.write_point_cloud("/home/ws/data/images/grasp_pcd_env.ply", pcd_env)
+        obj_pts = np.asarray(pcd_obj.points)
+        print(f"[grasp-debug] object cloud: {len(obj_pts)} pts, "
+              f"centroid={np.round(obj_pts.mean(axis=0), 3)}, "
+              f"z-range=[{round(float(obj_pts[:,2].min()),3)}, {round(float(obj_pts[:,2].max()),3)}], "
+              f"min_height clamp={round(min_height,3)}")
+
     try:
         # Get grasp pose
         tf_matrices, widths, scores = gpd_predict_full_grasp(pcd_obj, pcd_env, config, vis_block=False)
-        
-        
+
+
         tf_matrices, widths, scores = filter_grasps(tf_node, tf_matrices, widths, scores)
         visualize_grasps(pcd_obj, pcd_env, tf_matrices, widths, scores, "filtered_grasps")
+
+        if len(tf_matrices) == 0:
+            print("Error: No grasps survived filtering (all outside the yaw window).")
+            return
+        if DEBUG_GRASP:
+            print(f"[grasp-debug] {len(tf_matrices)} grasps survived filter; top score={scores[0]:.1f} "
+                  f"width={widths[0]:.3f} pos={np.round(tf_matrices[0][:3, 3], 3)}")
 
         final_grasp = adapt_grasp(tf_node, tf_matrices[0], min_height)
         visualize_grasps(pcd_obj, pcd_env, [final_grasp], [widths[0]], [scores[0]], "final_grasp")
         final_grasp = Pose3D(final_grasp[:3, 3], final_grasp[:3, :3])
+
+        if DEBUG_GRASP:
+            delta = np.round(np.asarray(final_grasp.coordinates) - tf_matrices[0][:3, 3], 3)
+            print(f"[grasp-debug] final grasp pos={np.round(final_grasp.coordinates, 3)} "
+                  f"(adapt_grasp moved it by {delta})")
     except Exception as e:
-        print(f"Error: Failed predicting grasp. {e}")  
+        print(f"Error: Failed predicting grasp. {e}")
+        return
     try:
         positional_grab(pos_node, pose_node, final_grasp, distance_start, distance_end, widths[0])
     except Exception as e:
@@ -466,7 +542,7 @@ def look_for_door(pose_node: JointPoseController, wrist: float = 0.15):
     spin_until_complete(pose_node)
     
 def move_in_front_of(
-    stow_node: StowArmController, base_node: BaseController, head_node: HeadJointController, pose_node: JointPoseController,
+    stow_node: StowArmController, base_node: BaseController, head_node: HeadJointController, pose_node: JointPoseController, transform_node: FrameTransformer,
     body_pose: Pose3D, target_center: Pose3D, yaw: float, pitch: float, roll: float, lift: float, stow: bool = True, grasp: bool = False
 ) -> bool:
     """
@@ -495,12 +571,9 @@ def move_in_front_of(
         print('#######################################')
         stow_arm(stow_node)
         print('#######################################')
-    reached = move_body(base_node, body_pose.to_dimension(2))
-    if not reached:
-        return False
     print("NOW TURNING")
     print(f"Target center: {target_center.as_ndarray()}")
-    turn_body(pose_node, target_center.to_dimension(2), grasp=grasp)
+    turn_body(pose_node, target_center.to_dimension(2), transform_node, grasp=grasp)
     if grasp:
         look_ahead(pose_node)
         unstow_arm(pose_node, target_center, yaw=yaw, pitch=pitch, roll=roll, lift=lift)
@@ -513,7 +586,7 @@ def move_in_front_of(
 
 def move_in_side_of(
     stow_node: StowArmController, base_node: BaseController, head_node: HeadJointController, pose_node: JointPoseController, 
-    body_pose: Pose3D, target_center: Pose3D, yaw: float, pitch: float, roll: float, lift: float, stow: bool = True, grasp: bool = False, small: bool = False
+    body_pose: Pose3D, target_center: Pose3D, transform_node: FrameTransformer, yaw: float, pitch: float, roll: float, lift: float, stow: bool = True, grasp: bool = False, small: bool = False
 ) -> None:
     
     if stow:
@@ -521,7 +594,7 @@ def move_in_side_of(
     move_body(base_node, body_pose.to_dimension(2))
     print("NOW TURNING")
     print(f"Target center: {target_center.as_ndarray()}")
-    turn_body(pose_node, target_center.to_dimension(2), grasp=grasp, small=small)
+    turn_body(pose_node, target_center.to_dimension(2), transform_node, grasp=grasp, small=small)
     
     if grasp:
         look_ahead(pose_node)
@@ -530,6 +603,8 @@ def move_in_side_of(
         time.sleep(2)
         move_head(head_node, target_center, tilt_bool=True)
         time.sleep(1)
+
+    transform_node.destroy_node()
     
 # def grasp_single_point(
 #     pos_node: JointPositionController,
@@ -595,7 +670,7 @@ def grasp_single_point(
         print(f"Error: Failed grabbing object. {e}")
 
 
-def drive_home(base_node: BaseController, pose_node: JointPoseController, stow_node: StowArmController,):
+def drive_home(base_node: BaseController, pose_node: JointPoseController, stow_node: StowArmController, transform_node: FrameTransformer):
     stow_arm(stow_node)
     move_body(base_node, Pose2D(np.array([0.0, 0.0])))
-    turn_body(pose_node, Pose2D(np.array([1.0, 0.0])), grasp=False)
+    turn_body(pose_node, Pose2D(np.array([1.0, 0.0])), transform_node, grasp=False)

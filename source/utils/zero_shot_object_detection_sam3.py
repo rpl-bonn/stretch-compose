@@ -124,7 +124,7 @@ CLASSES = ["potted plant", "watering can", "herbs", "bottle", "pot", "pan", "cup
 def _get_gemini_predictor():
     global _gemini_predictor
     if _gemini_predictor is None:
-        _gemini_predictor = gemini_client.GeminiLocationPredictor()
+        _gemini_predictor = gemini_client.GeminiERDetector()
     return _gemini_predictor
 
 def parse_detection_output(model_output: dict, img_width: int, img_height: int) -> tuple[bool, dict]:
@@ -1001,13 +1001,11 @@ def detect_handle(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.
     fx, fy = camera_matrix[0, 0], camera_matrix[1, 1]
     cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
     
-    depth = depth_img[y_handle, x_handle]
-    z = depth / 1000.0
+    z = robust_depth_m(depth_img, x_handle, y_handle)
     x = (x_handle - cx) * z / fx
     y = (y_handle - cy) * z / fy
     handle_pose_gripper = np.array((x, y, z, 1.0))
-    depth = depth_img[y_hinge, x_hinge]
-    z = depth / 1000.0
+    z = _robust_depth_m(depth_img, x_hinge, y_hinge)
     x_hinge = (x_hinge - cx) * z / fx
     y_hinge = (y_hinge - cy) * z / fy
     hinge_pose_gripper = np.array((x_hinge, y_hinge, z, 1.0))
@@ -1018,6 +1016,8 @@ def detect_handle(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.
     handle_pose_map = Pose3D(handle_pose_map[:3])
     hinge_pose_map = hinge_pose_gripper @ tf.T
     hinge_pose_map = Pose3D(hinge_pose_map[:3])
+    # Keep the raw camera-frame measurement alongside the map pose
+    handle_pose_map.coords_cam = handle_pose_gripper[:3].copy()
     print(f"Handle pose: {handle_pose_map}")
     print(f"Hinge pose: {hinge_pose_map}")
 
@@ -1048,6 +1048,22 @@ def sam3_detect_object(obj: str, rgb_img: np.ndarray, conf: float=0.25, save_blo
     else:
         print("SAM3 did not detect the object")
         return False, {}
+
+def robust_depth_m(depth_img: np.ndarray, x: int, y: int, win: int = 5) -> float:
+    """
+    Median of the valid depth values, in meters, inside a (2*win+1) square
+    window centered on pixel (x, y)
+    """
+
+    h, w = depth_img.shape[:2]
+    x0, x1 = max(0, x - win), min(w, x + win + 1)
+    y0, y1 = max(0, y - win), min(h, y + win + 1)
+    patch = depth_img[y0:y1, x0:x1].astype(np.float32)
+    valid = patch[patch > 0]
+    if valid.size == 0:
+        return 0.0
+    return float(np.median(valid)) / 1000.0
+
 
 def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.ndarray, prompts: list[str], target_pos: np.ndarray | None = None) -> tuple[Pose3D, str, Pose3D]:
     
@@ -1134,14 +1150,14 @@ def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, 
         #     filtered_matches = [Match(best_drawer, best_handle)]
         #     print("Fallback match used: nearest drawer to highest-confidence handle.")
 
-        if drawer_detections and not handle_detections:
-            # Handle detections missing —
-            # use the center of the highest-confidence drawer as a proxy handle position.
-            best_drawer = max(drawer_detections, key=lambda d: float(d.conf))
-            filtered_matches = [Match(best_drawer, best_drawer)]
-            print("Fallback match used: drawer center as proxy handle position (no handle detected).")
+        # if drawer_detections and not handle_detections:
+        #     # Handle detections missing —
+        #     # use the center of the highest-confidence drawer as a proxy handle position.
+        #     best_drawer = max(drawer_detections, key=lambda d: float(d.conf))
+        #     filtered_matches = [Match(best_drawer, best_drawer)]
+        #     print("Fallback match used: drawer center as proxy handle position (no handle detected).")
 
-    print("\nFiltered matches:", filtered_matches)
+    # print("\nFiltered matches:", filtered_matches)
     if not filtered_matches:
         print("No valid handle-drawer matches found.")
         return None, None, None
@@ -1176,20 +1192,18 @@ def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, 
 
 
         #print distances of all matches for debugging
-        print("Match distances to target position:")
+        # print("Match distances to target position:")
         for m in filtered_matches:
             dist = _handle_world_dist(m)
-            print(f"  - handle bbox=({m.handle.bbox.xmin:.1f},{m.handle.bbox.ymin:.1f},{m.handle.bbox.xmax:.1f},{m.handle.bbox.ymax:.1f}) -> distance={dist:.3f}m")
+            # print(f"  - handle bbox=({m.handle.bbox.xmin:.1f},{m.handle.bbox.ymin:.1f},{m.handle.bbox.xmax:.1f},{m.handle.bbox.ymax:.1f}) -> distance={dist:.3f}m")
     
         #pick the match with smallest 3D distance to the target drawer position
         best_match = min(filtered_matches, key=_handle_world_dist)
         dist_error = _handle_world_dist(best_match)
         print(f"Target pos={target_pos} — selected handle 3D distance={dist_error:.3f}m")
 
-        # Reject the best match if it is too far from the target position — the target
-        # drawer was simply not detected in this frame.  The caller's retry loop will
-        # re-capture an image and try again.
-        MAX_POS_ERROR = 0.2 #20 cm
+        # Reject the best match if it is too far from the target position
+        MAX_POS_ERROR = 0.2
         if dist_error > MAX_POS_ERROR:
             print(
                 f"[detect_drawer_handle_sam3] Best match 3D distance {dist_error:.3f}m exceeds "
@@ -1255,6 +1269,8 @@ def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, 
     handle_pose_map = Pose3D(handle_pose_map[:3])
     hinge_pose_map = hinge_pose_gripper @ tf.T
     hinge_pose_map = Pose3D(hinge_pose_map[:3])
+
+    handle_pose_map.coords_cam = handle_pose_gripper[:3].copy()
     print(f"Handle pose: {handle_pose_map}")
     print(f"Hinge pose: {hinge_pose_map}")
 
@@ -1357,7 +1373,7 @@ def detect_door_handle(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img
 
     return handle_pose_map, open_dir, hinge_pose_map
 
-def detect_door_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.ndarray, prompts: list[str]) -> tuple[Pose3D, str, Pose3D]:
+def detect_door_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.ndarray, prompts: list[str], target_pos: np.ndarray | None = None) -> tuple[Pose3D, str, Pose3D]:
     
     sam3_client = Sam3Client()
     tmp_path = prep_tmp_path(config)
@@ -1369,26 +1385,80 @@ def detect_door_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rg
     print("Drawer-door detections:", predictions)
     
     matches = drawer_handle_matches(predictions)
-    # Filter matches
-    filtered_matches = [m for m in matches if (m.handle is not None and m.drawer is not None)]
+
+    filtered_matches = [
+        m for m in matches
+        if (m.handle is not None and m.drawer is not None
+            and ("door" in m.drawer.name or "drawer" in m.drawer.name))
+]
+
 
     if not filtered_matches:
-        print("No valid handle-drawer matches found.")
+        print("No valid door-handle matches found.")
         return None, None, None
 
-    # Sort by handle center closeness to drawer edge (xmin or xmax)
-    sorted_matches = sorted(
-        filtered_matches,
-        key=lambda m: min(
-            abs(((m.handle.bbox.xmin + m.handle.bbox.xmax) // 2) - int(m.drawer.bbox.xmin)),
-            abs(((m.handle.bbox.xmin + m.handle.bbox.xmax) // 2) - int(m.drawer.bbox.xmax))
-        )
-    )
-    print("\nFiltered matches sorted by handle closeness to drawer edges:", sorted_matches)
-    test_prints(sorted_matches, rgb_img)
+    if target_pos is not None:
+        # Pick the match whose DOOR projects closest to the expected world position
+        
+        _cam_mat = intrinsics_from_camera('/gripper_camera/color/camera_info')
+        _fx, _fy = _cam_mat[0, 0], _cam_mat[1, 1]
+        _cx, _cy = _cam_mat[0, 2], _cam_mat[1, 2]
+        _tf = tf_node.get_tf_matrix("map", "gripper_camera_color_optical_frame")
+        spin_until_complete(tf_node)
 
-    # Pick the best match
-    best_match = sorted_matches[0]
+        def _door_world_dist(m):
+            """
+            Project the door (container) center pixel into world space and return the 3D
+            Euclidean distance to target_pos
+            """
+            #find door center pixel
+            dx_px = int((m.drawer.bbox.xmin + m.drawer.bbox.xmax) // 2)
+            dy_px = int((m.drawer.bbox.ymin + m.drawer.bbox.ymax) // 2)
+            #check depth value at door center pixel
+            d = depth_img[dy_px, dx_px] / 1000.0
+            if d <= 0:
+                return float('inf')
+            #unproject pixel to camera frame, then transform to world frame
+            px = (dx_px - _cx) * d / _fx
+            py = (dy_px - _cy) * d / _fy
+            world = np.array([px, py, d, 1.0]) @ _tf.T
+            return float(np.linalg.norm(world[:3] - target_pos[:3]))
+
+        #print distances of all matches for debugging
+        print("Match distances to target position:")
+        for m in filtered_matches:
+            dist = _door_world_dist(m)
+            print(f"  - door bbox=({m.drawer.bbox.xmin:.1f},{m.drawer.bbox.ymin:.1f},{m.drawer.bbox.xmax:.1f},{m.drawer.bbox.ymax:.1f}) -> distance={dist:.3f}m")
+ 
+        #pick the match whose door is closest in 3D to the target door position
+        best_match = min(filtered_matches, key=_door_world_dist)
+        dist_error = _door_world_dist(best_match)
+        print(f"Target pos={target_pos} — selected door 3D distance={dist_error:.3f}m")
+        test_prints([best_match], rgb_img)
+
+        # Reject the best match if it is too far from the target position
+        MAX_POS_ERROR = 0.20 #20 cm
+        if dist_error > MAX_POS_ERROR:
+            print(
+                f"[detect_door_handle_sam3] Best match 3D distance {dist_error:.3f}m exceeds "
+                f"threshold {MAX_POS_ERROR}m — target door not detected, returning None."
+            )
+            return None, None, None
+    else:
+        # Sort by handle center closeness to drawer edge (xmin or xmax)
+        sorted_matches = sorted(
+            filtered_matches,
+            key=lambda m: min(
+                abs(((m.handle.bbox.xmin + m.handle.bbox.xmax) // 2) - int(m.drawer.bbox.xmin)),
+                abs(((m.handle.bbox.xmin + m.handle.bbox.xmax) // 2) - int(m.drawer.bbox.xmax))
+            )
+        )
+        print("\nFiltered matches sorted by handle closeness to drawer edges:", sorted_matches)
+        test_prints(sorted_matches, rgb_img)
+
+        # Pick the best match
+        best_match = sorted_matches[0]
+
     hbbox = best_match.handle.bbox
     dbbox = best_match.drawer.bbox
 
@@ -1450,6 +1520,52 @@ def detect_door_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rg
     print(f"Hinge pose (map): {hinge_pose_map}")
 
     return handle_pose_map, open_dir, hinge_pose_map
+
+
+def detect_handle_simple(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.ndarray, prompts: list[str]) -> Pose3D | None:
+    """
+    Close-range handle/knob detector for the gripper camera
+    """
+
+    sam3_client = Sam3Client()
+    predictions = call_sam3(sam3_client, rgb_img, prompts)
+    print("================== SIMPLE HANDLE DETECTION ==================")
+    print("Detections:", predictions)
+
+    handles = [d for d in predictions if "handle" in d.name or "knob" in d.name or "circle" in d.name]
+    if not handles:
+        print("[simple-handle] no handle/knob detected.")
+        return None
+
+    # Only one knob is expected at close range; take the most confident
+    best = max(handles, key=lambda d: d.conf)
+    bb = best.bbox
+    x_px = int((bb.xmin + bb.xmax) // 2)
+    y_px = int((bb.ymin + bb.ymax) // 2)
+    print(f"[simple-handle] selected name={best.name} conf={best.conf:.2f} center=({x_px},{y_px})")
+
+    # Unproject the handle center pixel into the camera frame.
+    camera_matrix = intrinsics_from_camera('/gripper_camera/color/camera_info')
+    fx, fy = camera_matrix[0, 0], camera_matrix[1, 1]
+    cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
+    z = robust_depth_m(depth_img, x_px, y_px)
+
+    if z <= 0:
+        print("[simple-handle] invalid depth at handle center.")
+        return None
+    x = (x_px - cx) * z / fx
+    y = (y_px - cy) * z / fy
+    handle_pose_gripper = np.array((x, y, z, 1.0))
+
+    # Transform into the map frame 
+    tf = tf_node.get_tf_matrix("map", "gripper_camera_color_optical_frame")
+    spin_until_complete(tf_node)
+    handle_pose_map = Pose3D((tf @ handle_pose_gripper)[:3])
+   
+    handle_pose_map.coords_cam = handle_pose_gripper[:3].copy()
+    print(f"[simple-handle] handle pose (map): {handle_pose_map}")
+    return handle_pose_map
+
 
 def test_prints(matches, rgb_img, save_path="handle_door_match_current.png"):
     if not matches:

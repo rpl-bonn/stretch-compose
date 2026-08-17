@@ -16,7 +16,7 @@ class Sam3Server(Node):
 
         self.bridge = CvBridge()
 
-        self.sam3 = Sam3Inference(confidence_threshold=0.6)
+        self.sam3 = Sam3Inference(confidence_threshold=0.3)
         
         self.srv = self.create_service(
             InferenceSam3,

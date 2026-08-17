@@ -2,6 +2,9 @@ import os
 import cv2
 import torch
 from PIL import Image
+import matplotlib
+matplotlib.use("Agg") 
+import matplotlib.pyplot as plt
 
 import sam3
 from sam3 import build_sam3_image_model
@@ -86,26 +89,28 @@ class Sam3SceneInference:
         else:
             image = Image.fromarray(image)
 
-        inference_state = self.processor.set_image(image)
+        autocast_device = "cuda" if self.device == "cuda" else "cpu"
+        with torch.autocast(device_type=autocast_device, dtype=torch.bfloat16):
+            inference_state = self.processor.set_image(image)
 
-        all_detections = []
+            all_detections = []
 
-        for text_prompt in prompts:
+            for text_prompt in prompts:
 
-            result = self.processor.set_text_prompt(
-                state=inference_state,
-                prompt=text_prompt
-            )
+                result = self.processor.set_text_prompt(
+                    state=inference_state,
+                    prompt=text_prompt
+                )
 
-            all_detections += self._convert_to_detection_format(
-                text_prompt,
-                result["boxes"],
-                result["scores"],
-                file
-            )
+                all_detections += self._convert_to_detection_format(
+                    text_prompt,
+                    result["boxes"],
+                    result["scores"],
+                    file
+                )
 
-            if visualize:
-                self._plot(image, result, f"sam3_{text_prompt}_1.png")
+                if visualize:
+                    self._plot(image, result, f"sam3_{text_prompt}_1.png")
 
         return all_detections
 
@@ -137,5 +142,8 @@ class Sam3SceneInference:
         IMG_DIR = "/home/ws/data/images"
         vis_path = os.path.join(IMG_DIR, 'sam3', image_name)
 
+        os.makedirs(os.path.dirname(vis_path), exist_ok=True)
         print(f"Saving visualization to {vis_path}")
-        plot_results(image, inference_state, save_path=vis_path)
+        plot_results(image, inference_state)
+        plt.savefig(vis_path, bbox_inches="tight")
+        plt.close()
