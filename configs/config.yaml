@@ -9,6 +9,12 @@ note: "note"
 robot_parameters:
   verbose: False
 
+# navigation backend used by BaseController / move_body:
+#   "funmap" -> '/move_base', no driver mode switching
+#   "nav2"   -> rtabmap + Nav2
+navigation:
+  backend: "nav2"
+
 # device on which to train
 device: "cuda"
 
@@ -100,9 +106,9 @@ pre_scanned_graphs:
   # high_res: "2026_04_17"
   # masked: "2026_04_17"
 
-  low_res: "2026_04_23"
-  high_res: "2026_04_23"
-  masked: "2026_04_23"
+  # low_res: "2026_04_23"
+  # high_res: "2026_04_23"
+  # masked: "2026_04_23"
 
   # low_res: "2026_05_08"
   # high_res: "2026_05_08"
@@ -115,6 +121,13 @@ pre_scanned_graphs:
   # low_res: "2026_06_10"
   # high_res: "2026_06_10"
   # masked: "2026_06_10"
+  # low_res: "2026_06_19"
+  # high_res: "2026_06_19"
+  # masked: "2026_06_19"
+
+  low_res: "2026_06_22"
+  high_res: "2026_06_22"
+  masked: "2026_06_22"
 
 # paths are relative from project_root_directory
 subpaths:

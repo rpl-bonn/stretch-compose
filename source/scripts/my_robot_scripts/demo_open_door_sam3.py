@@ -23,7 +23,7 @@ from utils.recursive_config import Config
 from utils.robot_utils.advanced_movement import *
 from utils.robot_utils.basic_movement import *
 from utils.robot_utils.basic_perception import *
-from utils.zero_shot_object_detection_sam3 import yolo_detect_object, detect_handle, detect_door_handle, detect_door_handle_sam3
+from utils.zero_shot_object_detection_sam3 import yolo_detect_object, detect_handle, detect_door_handle, detect_door_handle_sam3, detect_handle_simple
 
 # Adaptable
 VIS_BLOCK = False
@@ -119,13 +119,13 @@ def execute_search(drawer_id: int) -> bool:
         print(f"Body pose: {body_pose}, Front normal: {front_normal}")
         print('----------------------------------------------')
         
-        move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, drawer_center, 0.0, 0.0, 0.10, 0.09, stow=True, grasp=True)           
+        move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose, drawer_center, 0.0, 0.0, 0.10, 0.09, stow=True, grasp=True)           
         look_for_door(joint_pose_node, wrist=0.01)
         
         # Take image of drawer to detect handle
         rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, image_topic, gripper=True)
         depth_img = get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, depth_topic, gripper=True)
-        look_for_door(joint_pose_node, wrist=0.01)
+        # look_for_door(joint_pose_node, wrist=0.01)
         # Skip if no handle detected
         
         IMG_DIR = config.get_subpath("images")
@@ -134,7 +134,13 @@ def execute_search(drawer_id: int) -> bool:
         print(f"Image saved to {vis_path}")
         
         # handle_pose, door_type, _ = detect_door_handle(transform_node, depth_img, rgb_img)
-        handle_pose, door_type, _ = detect_door_handle_sam3(transform_node, depth_img, rgb_img, prompts)
+        handle_pose, door_type, _ = detect_door_handle_sam3(transform_node, depth_img, rgb_img, prompts, target_pos=drawer_center.coordinates)
+        while handle_pose is None:
+            print("No handle detected, retrying...")
+            time.sleep(2.0)
+            rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, image_topic, gripper=True)
+            depth_img = get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, depth_topic, gripper=True)
+            handle_pose, door_type, _ = detect_door_handle_sam3(transform_node, depth_img, rgb_img, prompts, target_pos=drawer_center.coordinates)
         print("----------------------------------------------------------")
         print(f"HANDLE POSE: {handle_pose}")
         print("----------------------------------------------------------")
@@ -151,12 +157,12 @@ def execute_search(drawer_id: int) -> bool:
         if door_type == "right":
             print("----------------- RIGHT DOOR OPENING -----------------")
             new_body_pos = new_pose_right(body_pose, handle_pose)
-            door_exec(stow_node, base_node, head_node, joint_pose_node, joint_position_node, body_pose, new_body_pos, handle_pose, furniture_name, furniture_center, rgb_img, drawer_center)
+            door_exec(stow_node, base_node, head_node, joint_pose_node, joint_position_node, transform_node, body_pose, new_body_pos, handle_pose, furniture_name, furniture_center, rgb_img, drawer_center)
             
         if door_type == "left":
             print("----------------- LEFT DOOR OPENING -----------------")
             new_body_pos = new_pose_left(body_pose, handle_pose)
-            door_exec(stow_node, base_node, head_node, joint_pose_node, joint_position_node, body_pose, new_body_pos, handle_pose, furniture_name, furniture_center, rgb_img, drawer_center)
+            door_exec(stow_node, base_node, head_node, joint_pose_node, joint_position_node, transform_node, body_pose, new_body_pos, handle_pose, furniture_name, furniture_center, rgb_img, drawer_center)
             
     
     except Exception as e:
@@ -178,59 +184,56 @@ def execute_search(drawer_id: int) -> bool:
 
     return success
 
-def door_exec(stow_node: StowArmController, base_node: BaseController, head_node: HeadJointController, joint_pose_node: JointPoseController, joint_position_node: JointPositionController,
+def door_exec(stow_node: StowArmController, base_node: BaseController, head_node: HeadJointController, joint_pose_node: JointPoseController, joint_position_node: JointPositionController, transform_node: FrameTransformer,
               body_pose: Pose3D, new_body_pos: Pose3D, handle_pose: Pose3D, furniture_name: str, furniture_center: np.ndarray, rgb_img: np.ndarray, drawer_center: np.ndarray) -> None:
-    
-    move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, handle_pose, 0.0, 0.0, 0.0, 0.04, stow=False, grasp=True)   
+    print("-----Moving in front of the door before opening...-----")
+    move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose, handle_pose, 0.0, 0.0, 0.0, 0.04, stow=False, grasp=True)
      
     print(f'Body pose: {body_pose}')
     print(f'Handle pose: {handle_pose}')
     print(f"Calculated new body pose: {new_body_pos}")
     
-    if "kitchen" in furniture_name:
-        move_in_side_of(stow_node, base_node, head_node, joint_pose_node, new_body_pos, handle_pose, 0.0, 0.0, 0.0, 0.05, stow=False, grasp=True, small=True)
-        print(f"Executing door opening for {furniture_name}")
-        open_door_ik(joint_position_node, joint_pose_node, handle_pose, roll=0.0)
-    elif "shelf" in furniture_name:
-        move_in_side_of(stow_node, base_node, head_node, joint_pose_node, new_body_pos, handle_pose, 0.0, 0.0, 0.0, 0.05, stow=False, grasp=True, small=False)
-        print(f"Executing door opening for {furniture_name}")
-        open_door_ik(joint_position_node, joint_pose_node, handle_pose, roll=0.0)
+    # if "kitchen" in furniture_name:
+    #     move_in_side_of(stow_node, base_node, head_node, joint_pose_node, new_body_pos, handle_pose, 0.0, 0.0, 0.0, 0.05, stow=False, grasp=True, small=True)
+    #     print(f"Executing door opening for {furniture_name}")
+    #     open_door_ik(joint_position_node, joint_pose_node, handle_pose, roll=0.0)
+    # elif "shelf" in furniture_name:
+    move_in_side_of(stow_node, base_node, head_node, joint_pose_node, new_body_pos, handle_pose, transform_node, 0.0, 0.0, 0.0, 0.05, stow=True, grasp=True, small=False)
+    print(f"Executing door opening for {furniture_name}")
+    time.sleep(5.0)
+    open_door_ik(joint_position_node, joint_pose_node, handle_pose, transform_node, prompts=["knob", "handle", "circle", "wooden circle"], roll=0.0)
+
+    # # Return to front of drawer
     
-    # Return to front of drawer
+    # body_pose_return, _ = plan_search(furniture_name, furniture_center, drawer_center, purpose="look")
+    # move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose_return, drawer_center, 0.0, 0.0, 0.0, 0.05, stow=True, grasp=True)
     
-    body_pose_return, _ = plan_search(furniture_name, furniture_center, drawer_center, purpose="look")
-    move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose_return, drawer_center, 0.0, 0.0, 0.0, 0.05, stow=True, grasp=True)
+    # # Look into door and capture image
+    # look_into_door(joint_pose_node, drawer_center)
+    # get_rgb_picture(RGBImageSubscriber, joint_pose_node, image_topic, gripper=True, save_block=True, vis_block=VIS_BLOCK)
+    # time.sleep(1.0)
     
-    # Look into door and capture image
-    look_into_door(joint_pose_node, drawer_center)
-    get_rgb_picture(RGBImageSubscriber, joint_pose_node, image_topic, gripper=True, save_block=True, vis_block=VIS_BLOCK)
-    time.sleep(1.0)
-    
-    # Return back
-    arm_move_back(joint_pose_node)
+    # # Return back
+    # arm_move_back(joint_pose_node)
 
 def plan_search(furniture_name: str, furniture_center: np.ndarray, target_pose: Pose3D, purpose: str = "door") -> tuple[Pose3D, np.ndarray]:
     body_pose = None
     front_normal = None
     
-    if "kitchen" in furniture_name:
-        print("Planning for Kitchen Counter")
-        if purpose == "door":
-            body_pose, front_normal = searchnet_planning.plan_door_search(furniture_name, furniture_center, target_pose, 1.0)
-        elif purpose == "handle":
-            body_pose, front_normal = searchnet_planning.plan_door_search(furniture_name, furniture_center, target_pose, 1.0)
-        elif purpose == "look":
-            body_pose, front_normal = searchnet_planning.plan_door_search(furniture_name, furniture_center, target_pose, 1.0)
+    # if "kitchen" in furniture_name:
+    #     print("Planning for Kitchen Counter")
+    #     if purpose == "door":
+    #         body_pose, front_normal = searchnet_planning.plan_door_search(furniture_name, furniture_center, target_pose, 1.0)
+    #     elif purpose == "handle":
+    #         body_pose, front_normal = searchnet_planning.plan_door_search(furniture_name, furniture_center, target_pose, 1.0)
+    #     elif purpose == "look":
+    #         body_pose, front_normal = searchnet_planning.plan_door_search(furniture_name, furniture_center, target_pose, 1.0)
             
-    if "bookshelf" in furniture_name:
-        print("Planning for Bookshelf")
-        if purpose == "door":
-            body_pose, front_normal = searchnet_planning.plan_door_search(furniture_name, furniture_center, target_pose, 0.6)
-        elif purpose == "handle":
-            body_pose, front_normal = searchnet_planning.plan_door_search(furniture_name, furniture_center, target_pose, 0.85)
-        elif purpose == "look":
-            body_pose, front_normal = searchnet_planning.plan_door_search(furniture_name, furniture_center, target_pose, 0.6)
-        
+    # if "bookshelf" in furniture_name:
+    print("Planning for Bookshelf")
+    if purpose in ("door", "handle", "look"):
+        body_pose, front_normal = searchnet_planning.plan_door_search(furniture_name, furniture_center, target_pose, 0.6)
+    
     return body_pose, front_normal
 
 def new_pose_right(body_pose:Pose3D, handle_pose:Pose3D) -> Pose3D:
@@ -285,15 +288,63 @@ def new_pose_left(body_pose:Pose3D, handle_pose:Pose3D) -> Pose3D:
     print("--------------------------------------------------")
     return new_pose
 
-def open_door_ik(joint_position_node: JointPositionController, joint_pose_node: JointPoseController, handle_pose: Pose3D, roll: float) -> None:
-    handle_pose.coordinates[1] += -0.04
-    move_arm(joint_position_node, handle_pose, roll=roll)
-    set_gripper(joint_pose_node, 0.65)
-    adjust_door(joint_pose_node, handle_pose, pitch=-0.0, roll=roll, lift=0.07)
-    set_gripper(joint_pose_node, -0.35)
-    open_door(joint_pose_node)
-    set_gripper(joint_pose_node, 0.65)
+def open_door_ik(joint_position_node: JointPositionController, joint_pose_node: JointPoseController, handle_pose: Pose3D,
+                transform_node: FrameTransformer, prompts: list, roll: float) -> None:
     
+    handle_pose.coordinates[1] += -0.04
+
+    approach_pose = pose_distanced(handle_pose, 0.01)
+    approach_pose.coordinates[2] = handle_pose.coordinates[2]
+
+    move_arm(joint_position_node, approach_pose, roll=roll)
+    print("Arm moved to handle pose for opening door.")
+    time.sleep(2.0)
+    set_gripper(joint_pose_node, 0.65)
+    print("Gripper set to open position.")
+    time.sleep(2.0)
+
+    # Close-range refinement: only the knob is in view (door panel out of frame),
+    # so use the simple detector (no container matching / no position rejection)
+    # rather than detect_door_handle_sam3, which would always reject here.
+    rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, image_topic, gripper=True)
+    depth_img = get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, depth_topic, gripper=True)
+    handle_pose = detect_handle_simple(transform_node, depth_img, rgb_img, prompts)
+
+    while handle_pose is None:
+        print("No handle detected, retrying...")
+        time.sleep(2.0)
+        rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, image_topic, gripper=True)
+        depth_img = get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, depth_topic, gripper=True)
+        handle_pose = detect_handle_simple(transform_node, depth_img, rgb_img, prompts)
+    print("----------------------------------------------------------")
+    print(f"HANDLE POSE: {handle_pose}")
+    print("----------------------------------------------------------")
+
+    correct_vertical_offset(transform_node, joint_pose_node, handle_pose)
+        
+    # Wrist orientation for the grab (lift is now owned by correct_vertical_offset).
+    joint_pose_node.send_joint_pose({'joint_wrist_pitch': -0.0, 'joint_wrist_roll': roll})
+    spin_until_complete(joint_pose_node)
+    print("Door adjusted (lift from camera-relative handle measurement).")
+    time.sleep(1.0)
+
+    #close gripper
+    set_gripper(joint_pose_node, -0.35)
+    time.sleep(1.0)
+
+    #closed-loop grasp check: close the gripper and see if the handle is detected as grasped via effort sending
+    # effort_checker.closed_loop_grasp_check(joint_pose_node)
+
+
+    time.sleep(2.0)
+    print("Gripper set to closed position.")
+    time.sleep(2.0)
+    open_door(joint_pose_node)
+    print("Door opening motion executed.")
+    # time.sleep(6.0)
+    set_gripper(joint_pose_node, 0.65)
+    print("Gripper set to open position.")
+    # time.sleep(6.0)
 
 if __name__ == "__main__":
     # docker exec -it heuristic_khorana bash -c "source /opt/ros/humble/setup.bash && source /home/ws/install/setup.bash && ros2 run sam3_inference sam3_service.py"

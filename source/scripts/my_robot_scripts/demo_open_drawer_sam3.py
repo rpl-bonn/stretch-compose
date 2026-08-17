@@ -23,7 +23,7 @@ from utils.recursive_config import Config
 from utils.robot_utils.advanced_movement import *
 from utils.robot_utils.basic_movement import *
 from utils.robot_utils.basic_perception import *
-from utils.zero_shot_object_detection_sam3 import yolo_detect_object, detect_handle, detect_drawer_handle_sam3
+from utils.zero_shot_object_detection_sam3 import yolo_detect_object, detect_handle, detect_drawer_handle_sam3, detect_handle_simple
 
 # Adaptable
 VIS_BLOCK = False
@@ -116,7 +116,7 @@ def execute_search(drawer_id: int) -> bool:
             tolerance += 0.1
         print(f"Body pose: {body_pose}, front normal: {front_normal}")
         print('$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$$')
-        move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, drawer_center, 0.0, 0.0, 0.0, 0.09, stow=True, grasp=True)           
+        move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose, drawer_center, 0.0, 0.0, 0.0, 0.09, stow=True, grasp=True)           
             
         # Take image of drawer to detect handle
         rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, "/gripper_camera/color/image_rect_raw", gripper=True)
@@ -144,7 +144,7 @@ def execute_search(drawer_id: int) -> bool:
 
         # Open drawer and check for object inside
         if drawer_type == "front":
-            move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, handle_pose, 0.0, 0.0, np.pi/2, 0.09, stow=False, grasp=True)
+            move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose, handle_pose, 0.0, 0.0, np.pi/2, 0.09, stow=False, grasp=True)
 
             # Testing to re-detect handle from the new robot pos so that correct_lateral_offset
             # works from a fresh measurement rather than a pose that was computed from a
@@ -152,26 +152,31 @@ def execute_search(drawer_id: int) -> bool:
             rgb_img_refine = get_rgb_picture(RGBImageSubscriber, joint_pose_node, "/gripper_camera/color/image_rect_raw", gripper=True)
             depth_img_refine = get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, "/gripper_camera/aligned_depth_to_color/image_raw", gripper=True)
             handle_pose_refine, _, _ = detect_drawer_handle_sam3(transform_node, depth_img_refine, rgb_img_refine, prompts, target_pos=drawer_center.coordinates)
+            while handle_pose_refine is None:
+                print("Re-detection of handle failed, retrying...")
+                rgb_img_refine = get_rgb_picture(RGBImageSubscriber, joint_pose_node, "/gripper_camera/color/image_rect_raw", gripper=True)
+                depth_img_refine = get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, "/gripper_camera/aligned_depth_to_color/image_raw", gripper=True)
+                handle_pose_refine, _, _ = detect_drawer_handle_sam3(transform_node, depth_img_refine, rgb_img_refine, prompts, target_pos=drawer_center.coordinates)
             if handle_pose_refine is not None:
                 print(f"[centering] refreshed handle_pose: {handle_pose_refine.coordinates} (was {handle_pose.coordinates})")
                 handle_pose = handle_pose_refine
             else:
                 print("[centering] re-detection failed, keeping previous handle_pose")
-
-            correct_lateral_offset(transform_node, joint_pose_node, handle_pose)
-
             
-            try:
-               visualize_correction(transform_node, joint_pose_node, handle_pose)
-            except Exception as _ve:
-                print(f"[centering] visualisation failed (non-critical): {_ve}")
-            # ────────────────────────────────────────────────────────────────
+            time.sleep(3.0)
+            correct_offsets_base_frame(transform_node, joint_pose_node, handle_pose)
 
-            pull_drawer(joint_pose_node)
+            def measure_handle():
+                rgb_close = get_rgb_picture(RGBImageSubscriber, joint_pose_node, "/gripper_camera/color/image_rect_raw", gripper=True)
+                depth_close = get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, "/gripper_camera/aligned_depth_to_color/image_raw", gripper=True)
+                return detect_handle_simple(transform_node, depth_close, rgb_close, ["handle", "circle"])
+
+            #pull drawer halfway, check handle offset, apply trans correction if needed
+            pull_and_check_drawer(joint_pose_node, transform_node, measure_handle, IMG_DIR=IMG_DIR)
             time.sleep(2.0)
-            look_into_drawer(joint_pose_node, handle_pose)
+            # look_into_drawer(joint_pose_node, handle_pose)
             #time.sleep(1.0)
-            get_rgb_picture(RGBImageSubscriber, joint_pose_node, "/gripper_camera/color/image_rect_raw", gripper=True, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
+            # get_rgb_picture(RGBImageSubscriber, joint_pose_node, "/gripper_camera/color/image_rect_raw", gripper=True, save_block=SAVE_BLOCK, vis_block=VIS_BLOCK)
             # detected, detection_dict = yolo_detect_object(OBJECT, "gripper", conf=0.2, save_block=SAVE_BLOCK)
             time.sleep(1.0)
             push(joint_pose_node, handle_pose.coordinates[2]-0.09)
