@@ -1,3 +1,4 @@
+
 import json
 import numpy as np
 import os
@@ -24,18 +25,20 @@ from utils.recursive_config import Config
 from utils.robot_utils.advanced_movement import *
 from utils.robot_utils.basic_movement import *
 from utils.robot_utils.basic_perception import *
-from utils.zero_shot_object_detection import yolo_detect_object
 from utils.openmask_interface import get_mask_points
 from utils.openmask_interface import get_text_similarity
 from utils.open_vocab_graph_search import OpenVocabSearch
 from utils.llm_utils import openai_client
+from utils.llm_utils.gemini_client import GeminiLocationPredictor
+from utils.zero_shot_object_detection_sam3 import sam3_detect_object
+ 
 
 # Adaptable
 # Defaults
 VIS_BLOCK_DEFAULT = False
 SAVE_BLOCK_DEFAULT = True
 NO_PROPOSALS_DEFAULT = 3
-OBJECT = "bottle"
+OBJECT = "water bottle"
 
 # Config and Paths
 config = Config()
@@ -114,16 +117,18 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
             checked_furniture_ids.append(furniture_id)
             print(f"{OBJECT} is in the scene graph. Searching for it in/on {furniture} at {target_pos}")
 
-            move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
-            get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
+            move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
+            rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
             get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
-            detected, detection_dict = yolo_detect_object(OBJECT, "head", save_block=save_block)
+            detected, detection_dict = sam3_detect_object(OBJECT, rgb_img, save_block=save_block)
             if detected == False:
                 print(f"Failed to detect {OBJECT} in/on {furniture} despite being in the scene graph.")
-                oai = openai_client.oai_client
+                # oai = openai_client.oai_client
+                # img_path = os.path.join(IMG_DIR, f"camera_image_rgb.png")
+                # result = openai_client.check_image_response_for_object(oai, room_json_path, OBJECT, "gpt-4o-mini")
+                gemini_client = GeminiLocationPredictor()
                 img_path = os.path.join(IMG_DIR, f"camera_image_rgb.png")
-                result = openai_client.check_image_response_for_object(oai, room_json_path, OBJECT, "gpt-4o-mini")
-            
+                result = gemini_client.check_image_response_for_object(img_path, OBJECT)
         else:     
             # Check if location proposals already exist for the object
             object_filename = f"{OBJECT.replace(' ', '_')}.json"
@@ -146,7 +151,7 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
                 ovs = OpenVocabSearch()
                 #print("Skipping open vocabulary search for now.")
                 
-                candidate_found, likely_furniture_id, likely_furniture_label, mask_sim, text_sim = ovs.search(OBJECT, no_proposals=NO_PROPOSALS)
+                candidate_found, likely_furniture_id, likely_furniture_label, mask_sim, text_sim = ovs.search(OBJECT, no_proposals=NO_PROPOSALS_DEFAULT)
                 
                 if candidate_found:
                     probability = ovs.compute_probability(mask_sim, text_sim, 0.4)
@@ -159,10 +164,10 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
                     print(f"{OBJECT} is in the scene graph. Searching for it in/on {furniture} at {target_pos}")
                     candidate_found_with_high_probability = True
 
-                    move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
-                    get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
+                    move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
+                    rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
                     get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
-                    detected, detection_dict = yolo_detect_object(OBJECT, "head", save_block=save_block)
+                    detected, detection_dict = sam3_detect_object(OBJECT, rgb_img, save_block=save_block)
                 
                
         
@@ -170,19 +175,28 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
         if detected == False and location_proposals_already_exist == False:          
             # Check for object at the different locations proposed by DeepSeek
             print(f"No suitable furniture found for {OBJECT} with high enough probability. Asking openai for likely locations.")
-            oai = openai_client.oai_client
-            result = openai_client.ask_for_shelf_with_room_json(oai, room_json_path, OBJECT, "trash can", "gpt-4o-mini")
-
+            # oai = openai_client.oai_client
+            # result = openai_client.ask_for_shelf_with_room_json(oai, room_json_path, OBJECT, "trash can", "gpt-4o-mini")
+            gemini_client = GeminiLocationPredictor()
+            result = gemini_client.ask_for_shelf_with_room_json(room_json_path, OBJECT)
+            
             filename = f"{OBJECT.replace(' ', '_')}.json"
             object_location_json_path_llm_filename = os.path.join(object_location_json_path, filename)
             print(f"Saving object location prediction to {object_location_json_path_llm_filename}")
+            if not os.path.exists(object_location_json_path_llm_filename):
+                os.makedirs(os.path.dirname(object_location_json_path_llm_filename), exist_ok=True)
             with open(object_location_json_path_llm_filename, 'w') as f:
                 json.dump(result, f, indent=4)
             location_proposals_already_exist = True
             
         if (not candidate_found_with_high_probability or not detected) and location_proposals_already_exist:
-            for i in range(NO_PROPOSALS):
-                target_pos, furniture, front_normal, body_pose, furniture_id  = searchnet_planning.plan_furniture_search(OBJECT, i)
+            print(f"Checking for {OBJECT} at all locations proposed by LLM.")
+            for i in range(NO_PROPOSALS_DEFAULT):
+                try:
+                    target_pos, furniture, front_normal, body_pose, furniture_id  = searchnet_planning.plan_furniture_search(OBJECT, i)
+                except (KeyError, ValueError) as e:
+                    print(f"Skipping proposal {i}: {e}")
+                    continue
                 # Skip if already checked
                 if furniture_id in checked_furniture_ids:
                     print(f"Already checked {furniture} ({furniture_id}).")
@@ -190,10 +204,10 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
                 checked_furniture_ids.append(furniture_id)
                 print(f"Searching for {OBJECT} in/on {furniture} ({target_pos}).")
                 
-                move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
-                get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
+                move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
+                rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
                 get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
-                detected, detection_dict = yolo_detect_object(OBJECT, "head", save_block=save_block)
+                detected, detection_dict = sam3_detect_object(OBJECT, rgb_img, save_block=save_block)
                 if detected:
                     print(f"Found {OBJECT} in/on {furniture}: {detection_dict}")
                     break
@@ -205,7 +219,7 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
             print(f"Found {OBJECT} in/on {furniture}: {detection_dict}")
             # Move closer to the object
             center, body_pose, pcd = searchnet_planning.plan_object_search(transform_node, detection_dict, front_normal, pcd, furniture_id)
-            move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, center, 0.0, 0.0, 0.0, 0.1, stow=False, grasp=True)
+            move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose, center, 0.0, 0.0, 0.0, 0.1, stow=False, grasp=True)
             
             # Get dynamic point cloud of object
             gripper_tform_map = transform_node.get_tf_matrix("map", "link_grasp_center")

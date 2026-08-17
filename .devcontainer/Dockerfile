@@ -96,10 +96,23 @@ RUN apt-get update && apt-get install -y \
 # RUN apt-get update && apt-get install -y \
 #     pip install pyoptas
 
+# Pin numpy across ALL pip installs
+COPY .devcontainer/constraints.txt /etc/pip-constraints.txt
+ENV PIP_CONSTRAINT=/etc/pip-constraints.txt
+
 RUN apt-get update && apt-get install -y ros-humble-desktop ros-dev-tools rviz python3-pip
 
 # Install python dependencies
-RUN pip install open3d openai ikpy graphviz ultralytics apriltag git+https://github.com/openai/CLIP.git "numpy<1.25" transformers hydra-core
+RUN pip install open3d openai ikpy graphviz ultralytics apriltag git+https://github.com/openai/CLIP.git transformers hydra-core
+
+# Install rmw_cyclonedds_cpp for better performance
+RUN apt-get update && apt-get install -y ros-humble-rmw-cyclonedds-cpp
+
+# Install google genai and iopath
+RUN pip install google-genai iopath
+
+# Installing a PyTorch build compatible with CUDA 12.4
+RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 
 
 
@@ -115,6 +128,15 @@ RUN apt-get update && apt-get install -y espeak-ng alsa-utils
 # Source ROS environment automatically
 RUN echo "source /opt/ros/$ROS_DISTRO/setup.bash" >> /home/$USERNAME/.bashrc
 RUN echo "source /home/ws/ros2_ws/install/setup.bash" >> /home/$USERNAME/.bashrc
+
+# Adjust permissions of the home directory to match the host user
+ARG HOST_UID
+ARG HOST_GID
+RUN if [ -n "$HOST_UID" ] && [ "$HOST_UID:$HOST_GID" != "$(id -u $USERNAME):$(id -g $USERNAME)" ]; then \
+        groupmod -o -g "$HOST_GID" "$USERNAME" && \
+        usermod  -o -u "$HOST_UID" -g "$HOST_GID" "$USERNAME" && \
+        chown -R "$HOST_UID:$HOST_GID" /home/$USERNAME ; \
+    fi
 
 # Set the default user
 USER $USERNAME

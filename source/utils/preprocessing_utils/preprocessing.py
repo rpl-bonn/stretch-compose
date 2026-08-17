@@ -25,16 +25,25 @@ def pose_ipad_pointcloud(scan_dir, pcd_path=None, marker_type=cv2.aruco.DICT_APR
         
         arucoDict = cv2.aruco.getPredefinedDictionary(marker_type)
         arucoParams = cv2.aruco.DetectorParameters()
+        detector = cv2.aruco.ArucoDetector(arucoDict, arucoParams)
 
-
-        corners, ids, _ = cv2.aruco.detectMarkers(image, arucoDict, parameters=arucoParams)
+        corners, ids, _ = detector.detectMarkers(image)
 
         if len(corners) > 0:
-            rvecs, tvecs, _ = cv2.aruco.estimatePoseSingleMarkers(corners, aruco_length, cam_matrix, 0)
+            marker_points = np.array([
+                [-aruco_length / 2,  aruco_length / 2, 0],
+                [ aruco_length / 2,  aruco_length / 2, 0],
+                [ aruco_length / 2, -aruco_length / 2, 0],
+                [-aruco_length / 2, -aruco_length / 2, 0],
+            ], dtype=np.float32)
+            _, rvecs, tvecs = cv2.solvePnP(
+                marker_points, corners[0], cam_matrix, None,
+                flags=cv2.SOLVEPNP_IPPE_SQUARE,
+            )
             rotation_3x3, _ = cv2.Rodrigues(rvecs)
             T_camera_marker = np.eye(4)
             T_camera_marker[:3, :3] = rotation_3x3
-            T_camera_marker[:3, 3] = tvecs
+            T_camera_marker[:3, 3] = tvecs.flatten()
 
             # for debugging: visualize the aruco detection
             if vis_detection:

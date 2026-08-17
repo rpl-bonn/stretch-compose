@@ -7,15 +7,29 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 
+import stretch_package.stretch_movement.move_body as _move_body_mod
 from stretch_package.stretch_movement.move_body import BaseController
+from stretch_package.stretch_movement.mode_controller import ModeController
 from stretch_package.stretch_movement.move_to_pose import JointPoseController
 from stretch_package.stretch_movement.move_to_position import JointPositionController
 from stretch_package.stretch_movement.move_head import HeadJointController
 from stretch_package.stretch_movement.stow_arm import StowArmController
 from stretch_package.stretch_state.jointstate_subscriber import JointStateSubscriber
 from stretch_package.stretch_state.odom_subscriber import OdomSubscriber
+from stretch_package.stretch_state.frame_transformer import FrameTransformer
 from utils.coordinates import Pose2D, Pose3D
+from utils.recursive_config import Config
 from utils.robot_utils.global_parameters import *
+
+
+try:
+    NAV_BACKEND = Config()["navigation"]["backend"]
+except Exception:
+    NAV_BACKEND = "funmap"
+
+_NAV_ACTION_NAMES = {"funmap": "/move_base", "nav2": "navigate_to_pose"}
+
+_move_body_mod.DEFAULT_NAV_ACTION = _NAV_ACTION_NAMES.get(NAV_BACKEND, "/move_base")
 
 
 def spin_until_complete(node: Node) -> None:
@@ -70,11 +84,28 @@ def move_body(node: BaseController, pose: Pose2D) -> bool:
         bool: Whether the movement was successful
     """
     goal_pos = np.array([pose.coordinates[0], pose.coordinates[1]])
+
+    mode_node = None
+    if NAV_BACKEND == "nav2":
+        mode_node = ModeController()
+        mode_node.switch_to_navigation_mode()
+
     node.send_goal(round(float(pose.coordinates[0]), 3),round(float(pose.coordinates[1]), 3),round(float(pose.direction()[0]), 3), round(float(pose.direction()[1]), 3))
     spin_until_complete(node)
 
+    if mode_node is not None:
+        mode_node.switch_to_position_mode()
+        mode_node.destroy_node()
+
+    if NAV_BACKEND == "nav2":
+        if node.success:
+            print(f"Reached goal position: {goal_pos}.")
+            return True
+        print("Failed to reach goal position.")
+        return False
+
     odom = get_odom()
-    current_pos = np.array([odom.pose.pose.position.x, odom.pose.pose.position.y])   
+    current_pos = np.array([odom.pose.pose.position.x, odom.pose.pose.position.y])
 
     if np.allclose(current_pos, goal_pos, atol=POS_TOL):
         print(f"Reached goal position: {goal_pos}.")
@@ -84,23 +115,56 @@ def move_body(node: BaseController, pose: Pose2D) -> bool:
     return False
 
 
-def turn_body(node: JointPoseController, pose: Pose2D, grasp: bool= True, small: bool = False) -> None:
+def turn_body(node: JointPoseController, pose: Pose2D, transform_node: FrameTransformer, grasp: bool= True, small: bool = False) -> None:
     """
     Turn the robot to a specified orientation.
     
     Args:
         node (JointPoseController): ROS2 node to control the robot's base
         pose (Pose2D): Target orientation to turn towards
+        transform_node (FrameTransformer): ROS2 node to transform frames
         grasp (bool): Whether grasping after turning is necessary (turn pi/2 further)
         small (bool): Whether to turn by a smaller angle
     """
-    odom = get_odom()
-    current_pos = np.array([odom.pose.pose.position.x, odom.pose.pose.position.y, odom.pose.pose.position.z])
-    current_dir = np.array([odom.pose.pose.orientation.x, odom.pose.pose.orientation.y, odom.pose.pose.orientation.z, odom.pose.pose.orientation.w])
-    current_dir = np.arctan2(current_dir[2], current_dir[3]) * 2.0
+    # Get current position and yaw from TF map->base_link so heading math is in map frame.
+    try:
+        transform = transform_node.get_tf_matrix("map", "base_link")
+        if transform is None:
+            print("Failed to lookup transform.")
+            return
+        current_pos = np.array([transform[0, 3], transform[1, 3], transform[2, 3]])
+        current_dir = np.arctan2(transform[1, 0], transform[0, 0])
+
+    except Exception:
+        print("Failed to lookup transform.")
+        return
 
     goal_pos = pose.coordinates
     goal_dir = np.arctan2(goal_pos[1]-current_pos[1], goal_pos[0]-current_pos[0])
+    
+    # ===== DEBUG BLOCK START =====
+    print("\n[TURN_DEBUG] ------------------------------")
+    print(f"[TURN_DEBUG] grasp={grasp} small={small}")
+    print(f"[TURN_DEBUG] current_pos_xy(map)=({current_pos[0]:.3f}, {current_pos[1]:.3f})")
+    print(f"[TURN_DEBUG] goal_pos_xy(assumed same frame)=({goal_pos[0]:.3f}, {goal_pos[1]:.3f})")
+    print(f"[TURN_DEBUG] current_yaw_deg={np.degrees(current_dir):.2f}")
+    print(f"[TURN_DEBUG] goal_yaw_deg={np.degrees(goal_dir):.2f}")
+
+    raw_delta = goal_dir - current_dir
+    print(f"[TURN_DEBUG] raw_delta_deg={np.degrees(raw_delta):.2f}")
+
+    # Debugging the angle normalization to ensure it's correct
+    buggy_norm = raw_delta + np.pi % (2 * np.pi) - np.pi
+    # Correct wrapping
+    correct_norm = (raw_delta + np.pi) % (2 * np.pi) - np.pi
+
+    print(f"[TURN_DEBUG] buggy_norm_deg={np.degrees(buggy_norm):.2f}")
+    print(f"[TURN_DEBUG] correct_norm_deg={np.degrees(correct_norm):.2f}")
+
+    # Useful to see if target is already nearly aligned
+    print(f"[TURN_DEBUG] abs_correct_norm_deg={abs(np.degrees(correct_norm)):.2f}")
+    print("[TURN_DEBUG] ------------------------------\n")
+    # ===== DEBUG BLOCK END =====
     
     if grasp: # Note: Turn pi/2 further to grasp
         if small:
@@ -111,12 +175,28 @@ def turn_body(node: JointPoseController, pose: Pose2D, grasp: bool= True, small:
     else:
         turn_dir = goal_dir - current_dir
     
-    norm_turn_dir = turn_dir + np.pi % (2*np.pi) - np.pi
+    norm_turn_dir = (turn_dir + np.pi) % (2*np.pi) - np.pi
     turn_value = {'rotate_mobile_base': norm_turn_dir}
     print(f"Turning by {np.degrees(norm_turn_dir):.2f} degrees")
     node.send_joint_pose(turn_value)
     spin_until_complete(node)
+    
+    # ===== POST-TURN DEBUG =====
+    try:
+        transform_after = transform_node.get_tf_matrix("map", "base_link")
+        if transform_after is None:
+            print("Failed to lookup transform for post-turn debug.")
+            return
+        after_yaw = np.arctan2(transform_after[1, 0], transform_after[0, 0])
+    except Exception:
+        print("Failed to lookup transform for post-turn debug.")
+        return
+    residual = (goal_dir - after_yaw + np.pi) % (2 * np.pi) - np.pi
 
+    print("\n[TURN_DEBUG_POST] -------------------------")
+    print(f"[TURN_DEBUG_POST] after_yaw_deg={np.degrees(after_yaw):.2f}")
+    print(f"[TURN_DEBUG_POST] residual_to_goal_deg={np.degrees(residual):.2f}")
+    print("[TURN_DEBUG_POST] -------------------------\n")
 
 def unstow_arm(node: JointPoseController, pose: Pose3D, yaw: float = np.pi/2, pitch: float = 0.0, roll: float = 0.0, lift: float = 0.0) -> None:
     """

@@ -14,7 +14,6 @@ from scipy.optimize import linear_sum_assignment
 import sys
 import time
 import torch
-from transformers import Owlv2ForObjectDetection, Owlv2Processor
 import traceback
 from ultralytics import YOLOWorld
 
@@ -42,36 +41,6 @@ from sam2.build_sam import build_sam2 # type: ignore
 from sam2.sam2_image_predictor import SAM2ImagePredictor # type: ignore
 from utils.openmask_interface import get_mask_points, get_text_similarity, select_with_clip
 
-# Fixed
-_PROCESSOR = Owlv2Processor.from_pretrained("google/owlv2-base-patch16-ensemble")
-_DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-_MODEL = Owlv2ForObjectDetection.from_pretrained("google/owlv2-base-patch16-ensemble", torch_dtype=torch.float16 if _DEVICE.type == "cuda" else torch.float32,
-  low_cpu_mem_usage=True)
-_MODEL.to(_DEVICE)
-_MODEL.eval()
-_SCORE_THRESH = 0.5
-
-yolo_model = YOLOWorld("/home/ws/source/yolov8x-worldv2.pt")
-yolo_model = yolo_model.to(_DEVICE)   # moves model weights
-yolo_model.eval()
-
-
-if _DEVICE.type == "cuda":
-    torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
-    if torch.cuda.get_device_properties(0).major >= 8:
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-
-# Load model and image
-sam2_checkpoint = "/home/ws/source/sam2/checkpoints/sam2.1_hiera_large.pt"
-model_cfg = "configs/sam2.1/sam2.1_hiera_l.yaml"
-sam2_predictor = SAM2ImagePredictor(build_sam2(model_cfg, sam2_checkpoint, device=_DEVICE.type))
-
-# Adaptable
-VIS_BLOCK = False
-CLASSES = ["potted plant", "watering can", "herbs", "bottle", "pot", "pan", "cup", "plate", "bowl", "milk carton", "box", "stove", "oven",
-           "football", "football plushy", "tennis ball", "image frame", "cat plushy", "shark plushy", "folder", "drawer", "door"]
-
 # Config and Paths
 config = Config()
 ending = config["pre_scanned_graphs"]["high_res"]
@@ -79,7 +48,84 @@ scan_path = config.get_subpath("ipad_scans")
 SCAN_DIR = os.path.join(scan_path, ending)
 IMG_DIR = config.get_subpath("images")
 
-gemini_predictor = gemini_client.GeminiLocationPredictor()
+# Fixed
+_DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+_SCORE_THRESH = 0.5
+
+if _DEVICE.type == "cuda":
+    torch.autocast("cuda", dtype=torch.bfloat16).__enter__()
+    if torch.cuda.get_device_properties(0).major >= 8:
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+
+_PROCESSOR = None
+_MODEL = None
+yolo_model = None
+sam2_predictor = None
+_gemini_predictor = None
+Owlv2ForObjectDetection = None
+Owlv2Processor = None
+_OWL_IMPORT_ERROR = None
+
+
+_SAM2_CHECKPOINT = "/home/ws/source/sam2/checkpoints/sam2.1_hiera_large.pt"
+_SAM2_MODEL_CFG = "configs/sam2.1/sam2.1_hiera_l.yaml"
+
+# Only initialize models when needed to save time and GPU memory, especially since some detections only require one model. 
+def _init_owlv2():
+    global _PROCESSOR, _MODEL, Owlv2ForObjectDetection, Owlv2Processor, _OWL_IMPORT_ERROR
+    if _MODEL is not None and _PROCESSOR is not None:
+        return True
+
+    if Owlv2ForObjectDetection is None or Owlv2Processor is None:
+        try:
+            from transformers import Owlv2ForObjectDetection as _Owlv2ForObjectDetection
+            from transformers import Owlv2Processor as _Owlv2Processor
+
+            Owlv2ForObjectDetection = _Owlv2ForObjectDetection
+            Owlv2Processor = _Owlv2Processor
+        except Exception as exc:
+            _OWL_IMPORT_ERROR = exc
+            print(f"Warning: OWL-v2 import failed, skipping OWL-v2 detection: {exc}")
+            return False
+
+    try:
+        _PROCESSOR = Owlv2Processor.from_pretrained("google/owlv2-base-patch16-ensemble")
+        _MODEL = Owlv2ForObjectDetection.from_pretrained(
+            "google/owlv2-base-patch16-ensemble",
+            torch_dtype=torch.float16 if _DEVICE.type == "cuda" else torch.float32,
+            low_cpu_mem_usage=True,
+        )
+        _MODEL.to(_DEVICE)
+        _MODEL.eval()
+        return True
+    except Exception as exc:
+        _OWL_IMPORT_ERROR = exc
+        print(f"Warning: OWL-v2 initialization failed, skipping OWL-v2 detection: {exc}")
+        return False
+
+def _init_yolo():
+    global yolo_model
+    if yolo_model is None:
+        yolo_model = YOLOWorld("/home/ws/source/yolov8x-worldv2.pt")
+        yolo_model = yolo_model.to(_DEVICE)
+        yolo_model.eval()
+
+def _init_sam2():
+    global sam2_predictor
+    if sam2_predictor is None:
+        sam2_predictor = SAM2ImagePredictor(build_sam2(_SAM2_MODEL_CFG, _SAM2_CHECKPOINT, device=_DEVICE.type))
+
+# Adaptable
+VIS_BLOCK = False
+CLASSES = ["potted plant", "watering can", "herbs", "bottle", "pot", "pan", "cup", "plate", "bowl", "milk carton", "box", "stove", "oven",
+           "football", "football plushy", "tennis ball", "image frame", "cat plushy", "shark plushy", "folder", "drawer", "door"]
+
+def _get_gemini_predictor():
+    global _gemini_predictor
+    if _gemini_predictor is None:
+        _gemini_predictor = gemini_client.GeminiERDetector()
+    return _gemini_predictor
 
 def parse_detection_output(model_output: dict, img_width: int, img_height: int) -> tuple[bool, dict]:
     """
@@ -237,6 +283,8 @@ def owlv2_detect_objects() -> None:
     """
     Detect objects in images using the OWL-ViT model.
     """
+    if not _init_owlv2():
+        return
     for image_file in [f for f in os.listdir(IMG_DIR) if f.startswith("frame")]:
         image = cv2.imread(os.path.join(IMG_DIR, image_file)) 
         image = np.asarray(image)
@@ -283,21 +331,23 @@ def owlv2_detect_object(obj: str, camera: str, conf: float=0.25, save_block: boo
     Returns:
         tuple[bool, dict]: Tuple containing a boolean indicating if the object was detected and a dictionary with detection information.
     """
+    if not _init_owlv2():
+        return False, {}
     detected = False
     detection_dict = {}
     image_path = os.path.join(IMG_DIR, f"{camera}_image_rgb.png")
-    image = cv2.imread(image_path) 
+    image = cv2.imread(image_path)
     if image is None:
         print(f"Warning: Image file not found at {image_path}. Skipping image check.")
         return False, {}
-    
+
     image = np.asarray(image)
-    
+
     image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
     image = normalize_image(image)
     texts = [f"a photo of a {obj}"]
     image_pil = Image.fromarray(image)
-    
+
     # Detect objects
     start_time = time.time()
 
@@ -348,8 +398,7 @@ def yolo_detect_objects() -> None:
     """
     Detect objects in images using the YOLO-World model.
     """
-    # Load model
-    #model = YOLOWorld("/home/ws/source/yolov8x-worldv2.pt")
+    _init_yolo()
     yolo_model.set_classes(CLASSES)
 
     for image_file in [f for f in os.listdir(IMG_DIR) if f.startswith("frame")]:
@@ -374,6 +423,7 @@ def yolo_world_detect_object(obj: str, camera: str, conf: float = 0.25, save_blo
     """
     Run YOLO-World detection only.
     """
+    _init_yolo()
     image_path = os.path.join(IMG_DIR, f"{camera}_image_rgb.png")
     if not os.path.exists(image_path):
         return False, {}
@@ -418,7 +468,7 @@ def gemini_detect_object(obj: str, camera: str, save_block: bool = False) -> tup
                 img.convert("RGB").save(jpeg_buffer, format="JPEG", quality=85)
                 image_bytes = jpeg_buffer.getvalue()
 
-        output = gemini_predictor.detect_object_in_image(image_data=image_bytes, object_name=obj)
+        output = _get_gemini_predictor().detect_object_in_image(image_data=image_bytes, object_name=obj)
         img = cv2.imread(image_path)
         h, w = img.shape[:2]
         detected, detection_dict = parse_detection_output(output, img_width=w, img_height=h)
@@ -508,10 +558,11 @@ def yolo_detect_object_old(obj: str, camera: str, conf: float=0.2, save_block: b
     Returns:
         tuple[bool, dict]: Tuple containing a boolean indicating if the object was detected and a dictionary with detection information.
     """
+    _init_yolo()
     detected = False
     detection_dict = {}
     image_path = os.path.join(IMG_DIR, f"{camera}_image_rgb.png")
-    
+
     # Always try the full object name first, then try combos if not detected
     obj_words = obj.split()
     combos = []
@@ -571,7 +622,7 @@ def yolo_detect_object_old(obj: str, camera: str, conf: float=0.2, save_block: b
                                 detected = False
                                 detection_dict = {}
                             
-                            output = gemini_predictor.detect_object_in_image(image_data=image_bytes, object_name=obj)
+                            output = _get_gemini_predictor().detect_object_in_image(image_data=image_bytes, object_name=obj)
                             img = cv2.imread(image_path)
                             h, w = img.shape[:2]
                             detected, detection_dict = parse_detection_output(output, img_width=w, img_height=h)
@@ -630,6 +681,7 @@ def sam_detect_object(camera: str, x: int, y: int, i: int, input_box: dict = Non
         tuple[np.array, np.array, np.array]: Tuple containing the mask, score, and logits of the detected object.
     """
     
+    _init_sam2()
     image = Image.open(os.path.join(IMG_DIR, f"{camera}_image_rgb.png"))
     start_time = time.time()
     sam2_predictor.set_image(image)
@@ -669,7 +721,7 @@ def sam_detect_object(camera: str, x: int, y: int, i: int, input_box: dict = Non
     # return masks[0], scores[0], logits[0]
 
 def sam_random_detect(camera: str, i: int, num_points: int = 10) -> list[dict]:
-    
+    _init_sam2()
     image = Image.open(os.path.join(IMG_DIR, f"{camera}_image_rgb.png")).convert("RGB")
     sam2_predictor.set_image(image)
     w, h = image.size
@@ -830,7 +882,7 @@ def get_cloud_from_gripper_detection(tf_node: FrameTransformer, mask: np.ndarray
     return pcd
 
 
-def drawer_handle_matches(detections: list[Detection]) -> list[Match]:
+def drawer_handle_matches(detections: list[Detection], ioa_threshold: float = 0.9) -> list[Match]:
     """
     Match drawer and handle detections based on their bounding boxes and IOA (Intersection Over Area).
     This function takes a list of detections, filters out drawer and handle detections,
@@ -864,6 +916,8 @@ def drawer_handle_matches(detections: list[Detection]) -> list[Match]:
         intersection_area = overlap_width * overlap_height
         handle_area = (handle_right - handle_left) * (handle_bottom - handle_top)
 
+        if handle_area <= 0:
+            return 0.0, 0.0
         ioa = intersection_area / handle_area
         if ioa == 0:
             return ioa, ioa
@@ -881,7 +935,7 @@ def drawer_handle_matches(detections: list[Detection]) -> list[Match]:
     drawer_idxs, handle_idxs = linear_sum_assignment(-matching_scores[..., 0])
     matches = [Match(drawer_detections[drawer_idx], handle_detections[handle_idx])
                for (drawer_idx, handle_idx) in zip(drawer_idxs, handle_idxs)
-               if matching_scores[drawer_idx, handle_idx, 1] > 0.9  # ioa
+               if matching_scores[drawer_idx, handle_idx, 1] > ioa_threshold
                ]
 
     for drawer_idx, drawer_detection in enumerate(drawer_detections):
@@ -947,13 +1001,11 @@ def detect_handle(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.
     fx, fy = camera_matrix[0, 0], camera_matrix[1, 1]
     cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
     
-    depth = depth_img[y_handle, x_handle]
-    z = depth / 1000.0
+    z = robust_depth_m(depth_img, x_handle, y_handle)
     x = (x_handle - cx) * z / fx
     y = (y_handle - cy) * z / fy
     handle_pose_gripper = np.array((x, y, z, 1.0))
-    depth = depth_img[y_hinge, x_hinge]
-    z = depth / 1000.0
+    z = _robust_depth_m(depth_img, x_hinge, y_hinge)
     x_hinge = (x_hinge - cx) * z / fx
     y_hinge = (y_hinge - cy) * z / fy
     hinge_pose_gripper = np.array((x_hinge, y_hinge, z, 1.0))
@@ -964,36 +1016,209 @@ def detect_handle(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.
     handle_pose_map = Pose3D(handle_pose_map[:3])
     hinge_pose_map = hinge_pose_gripper @ tf.T
     hinge_pose_map = Pose3D(hinge_pose_map[:3])
+    # Keep the raw camera-frame measurement alongside the map pose
+    handle_pose_map.coords_cam = handle_pose_gripper[:3].copy()
     print(f"Handle pose: {handle_pose_map}")
     print(f"Hinge pose: {hinge_pose_map}")
 
     return handle_pose_map, open_dir, hinge_pose_map
 
-def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.ndarray, prompts: list[str]) -> tuple[Pose3D, str, Pose3D]:
+def sam3_detect_object(obj: str, rgb_img: np.ndarray, conf: float=0.25, save_block: bool = False) -> tuple[bool, dict]:
+    sam3_client = Sam3Client()
+    tmp_path = prep_tmp_path(config)
+    save_data = [("image.npy", np.save, rgb_img)]
+    image_path, *_ = save_files(save_data, tmp_path)
+    print(
+        "SAM3 caller image info: "
+        f"type={type(rgb_img)}, "
+        f"shape={getattr(rgb_img, 'shape', None)}, "
+        f"dtype={getattr(rgb_img, 'dtype', None)}"
+    )
+    predictions = call_sam3(sam3_client,rgb_img, [obj])
+    print("SAM3 predictions:", predictions)
+    if predictions:
+        best_pred = max(predictions, key=lambda p: float(p.conf))
+        detection_dict = {
+            'label': best_pred.name,
+            'confidence': float(best_pred.conf),
+            'box': (int(best_pred.bbox.xmin), int(best_pred.bbox.ymin), int(best_pred.bbox.xmax), int(best_pred.bbox.ymax))
+        }
+        print(f"SAM3 Detection found: {detection_dict}")
+        return True, detection_dict
+    else:
+        print("SAM3 did not detect the object")
+        return False, {}
+
+def robust_depth_m(depth_img: np.ndarray, x: int, y: int, win: int = 5) -> float:
+    """
+    Median of the valid depth values, in meters, inside a (2*win+1) square
+    window centered on pixel (x, y)
+    """
+
+    h, w = depth_img.shape[:2]
+    x0, x1 = max(0, x - win), min(w, x + win + 1)
+    y0, y1 = max(0, y - win), min(h, y + win + 1)
+    patch = depth_img[y0:y1, x0:x1].astype(np.float32)
+    valid = patch[patch > 0]
+    if valid.size == 0:
+        return 0.0
+    return float(np.median(valid)) / 1000.0
+
+
+def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.ndarray, prompts: list[str], target_pos: np.ndarray | None = None) -> tuple[Pose3D, str, Pose3D]:
     
     sam3_client = Sam3Client()
     tmp_path = prep_tmp_path(config)
 
     save_data = [("image.npy", np.save, rgb_img)]
     image_path, *_ = save_files(save_data, tmp_path)
+    print(
+        "SAM3 caller image info: "
+        f"type={type(rgb_img)}, "
+        f"shape={getattr(rgb_img, 'shape', None)}, "
+        f"dtype={getattr(rgb_img, 'dtype', None)}"
+    )
     predictions = call_sam3(sam3_client,rgb_img, prompts)
     print("================== DRAWER HANDLE DETECTION ==================")
     print("Drawer-door detections:", predictions)
+
+    if predictions:
+        print("Raw SAM3 detections:")
+        for det in predictions:
+            bbox = det.bbox
+            print(f"  - label={det.name} conf={det.conf:.3f} bbox=({bbox.xmin:.1f},{bbox.ymin:.1f},{bbox.xmax:.1f},{bbox.ymax:.1f})")
+    else:
+        print("Raw SAM3 detections: []")
+
+    # Save and publish an annotated debug frame so failures can be inspected even without a live ROS image subscriber.
+    # debug_img_path = os.path.join(IMG_DIR, "gripper_sam3_debug.png")
+    # annotated_debug_path = os.path.join(IMG_DIR, "gripper_sam3_debug_annotated.png")
+    # cv2.imwrite(debug_img_path, rgb_img)
+    # vis_dets = []
+    # for det in predictions:
+    #     bbox = det.bbox
+    #     vis_dets.append({
+    #         "label": det.name,
+    #         "confidence": float(det.conf),
+    #         "box": [int(bbox.xmin), int(bbox.ymin), int(bbox.xmax), int(bbox.ymax)],
+    #     })
+
+    # # Also write a static annotated image to disk for deterministic debugging.
+    # annotated = rgb_img.copy()
+    # for det in vis_dets:
+    #     x0, y0, x1, y1 = det["box"]
+    #     color = (0, 255, 0) if "handle" in det["label"] or "knob" in det["label"] else (255, 180, 0)
+    #     cv2.rectangle(annotated, (x0, y0), (x1, y1), color, 2)
+    #     cv2.putText(
+    #         annotated,
+    #         f"{det['label']}:{det['confidence']:.2f}",
+    #         (x0, max(0, y0 - 8)),
+    #         cv2.FONT_HERSHEY_SIMPLEX,
+    #         0.4,
+    #         color,
+    #         1,
+    #         cv2.LINE_AA,
+    #     )
+    # cv2.imwrite(annotated_debug_path, annotated)
+
+    # vis = detection_visualizer.DetectionVisualizer(topic="annotated_image")
+    # vis.visualize(debug_img_path, detections=vis_dets)
+    # vis.close()
     
-    matches = drawer_handle_matches(predictions)
+    ioa_threshold = 0.9  # Temporary relaxed threshold for debugging
+    print(f"Using drawer-handle IOA threshold: {ioa_threshold}")
+    matches = drawer_handle_matches(predictions, ioa_threshold=ioa_threshold)
     filtered_matches = [m for m in matches if (m.handle is not None and m.drawer is not None)]
-    print("\nFiltered matches:", filtered_matches)
+    
+    # Fallback: if IoA matching fails, pair the highest-confidence handle with nearest drawer center.
+    if filtered_matches==[]:
+        drawer_detections = [det for det in predictions if ("door" in det.name or "drawer" in det.name)]
+        handle_detections = [det for det in predictions if ("handle" in det.name or "knob" in det.name)]
+
+        # if drawer_detections and handle_detections:
+        #     best_handle = max(handle_detections, key=lambda d: float(d.conf))
+
+        #     hx = 0.5 * (best_handle.bbox.xmin + best_handle.bbox.xmax)
+        #     hy = 0.5 * (best_handle.bbox.ymin + best_handle.bbox.ymax)
+
+        #     def center_dist_sq(drawer_det):
+        #         dx = 0.5 * (drawer_det.bbox.xmin + drawer_det.bbox.xmax)
+        #         dy = 0.5 * (drawer_det.bbox.ymin + drawer_det.bbox.ymax)
+        #         return (dx - hx) ** 2 + (dy - hy) ** 2
+
+        #     best_drawer = min(drawer_detections, key=center_dist_sq)
+        #     filtered_matches = [Match(best_drawer, best_handle)]
+        #     print("Fallback match used: nearest drawer to highest-confidence handle.")
+
+        # if drawer_detections and not handle_detections:
+        #     # Handle detections missing —
+        #     # use the center of the highest-confidence drawer as a proxy handle position.
+        #     best_drawer = max(drawer_detections, key=lambda d: float(d.conf))
+        #     filtered_matches = [Match(best_drawer, best_drawer)]
+        #     print("Fallback match used: drawer center as proxy handle position (no handle detected).")
+
+    # print("\nFiltered matches:", filtered_matches)
     if not filtered_matches:
         print("No valid handle-drawer matches found.")
         return None, None, None
+
+    if target_pos is not None:
+        # Pick the match whose handle projects closest to the expected world position.
+        # Using full 3D distance disambiguates drawers that share the same Z height
+        # but differ horizontally
+        _cam_mat = intrinsics_from_camera('/gripper_camera/color/camera_info')
+        _fx, _fy = _cam_mat[0, 0], _cam_mat[1, 1]
+        _cx, _cy = _cam_mat[0, 2], _cam_mat[1, 2]
+        _tf = tf_node.get_tf_matrix("map", "gripper_camera_color_optical_frame")
+        spin_until_complete(tf_node)
+
+        def _handle_world_dist(m):
+            """
+            Project handle center pixel into world space and return the 3D Euclidean
+            distance to target_pos.  Returns inf when depth is invalid.
+            """
+            #find handle center pixel
+            hx = int((m.handle.bbox.xmin + m.handle.bbox.xmax) // 2)
+            hy = int((m.handle.bbox.ymin + m.handle.bbox.ymax) // 2)
+            #check depth value at handle center pixel, return large error if no valid depth
+            d = depth_img[hy, hx] / 1000.0
+            if d <= 0:
+                return float('inf')
+            #unproject pixel to camera frame, then transform to world frame
+            px = (hx - _cx) * d / _fx
+            py = (hy - _cy) * d / _fy
+            world = np.array([px, py, d, 1.0]) @ _tf.T
+            return float(np.linalg.norm(world[:3] - target_pos[:3]))
+
+
+        #print distances of all matches for debugging
+        # print("Match distances to target position:")
+        for m in filtered_matches:
+            dist = _handle_world_dist(m)
+            # print(f"  - handle bbox=({m.handle.bbox.xmin:.1f},{m.handle.bbox.ymin:.1f},{m.handle.bbox.xmax:.1f},{m.handle.bbox.ymax:.1f}) -> distance={dist:.3f}m")
     
-    sorted_matches = sorted(
-        filtered_matches, 
-        key=lambda m: ((m.handle.bbox.xmin+m.handle.bbox.xmax)//2 - rgb_img.shape[1]//2)**2 + 
-                    ((m.handle.bbox.ymin+m.handle.bbox.ymax)//2 - rgb_img.shape[0]//2)**2)
-    
+        #pick the match with smallest 3D distance to the target drawer position
+        best_match = min(filtered_matches, key=_handle_world_dist)
+        dist_error = _handle_world_dist(best_match)
+        print(f"Target pos={target_pos} — selected handle 3D distance={dist_error:.3f}m")
+
+        # Reject the best match if it is too far from the target position
+        MAX_POS_ERROR = 0.2
+        if dist_error > MAX_POS_ERROR:
+            print(
+                f"[detect_drawer_handle_sam3] Best match 3D distance {dist_error:.3f}m exceeds "
+                f"threshold {MAX_POS_ERROR}m — target drawer not detected, returning None."
+            )
+            return None, None, None
+    else:
+        sorted_matches = sorted(
+            filtered_matches,
+            key=lambda m: ((m.handle.bbox.xmin+m.handle.bbox.xmax)//2 - rgb_img.shape[1]//2)**2 +
+                          ((m.handle.bbox.ymin+m.handle.bbox.ymax)//2 - rgb_img.shape[0]//2)**2)
+        best_match = sorted_matches[0]
+
     # Get the handle bounding box and center
-    best_match = sorted_matches[0]
+    # (best_match already selected above)
     hbbox = best_match.handle.bbox
     dbbox = best_match.drawer.bbox
     
@@ -1044,6 +1269,8 @@ def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, 
     handle_pose_map = Pose3D(handle_pose_map[:3])
     hinge_pose_map = hinge_pose_gripper @ tf.T
     hinge_pose_map = Pose3D(hinge_pose_map[:3])
+
+    handle_pose_map.coords_cam = handle_pose_gripper[:3].copy()
     print(f"Handle pose: {handle_pose_map}")
     print(f"Hinge pose: {hinge_pose_map}")
 
@@ -1146,7 +1373,7 @@ def detect_door_handle(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img
 
     return handle_pose_map, open_dir, hinge_pose_map
 
-def detect_door_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.ndarray, prompts: list[str]) -> tuple[Pose3D, str, Pose3D]:
+def detect_door_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.ndarray, prompts: list[str], target_pos: np.ndarray | None = None) -> tuple[Pose3D, str, Pose3D]:
     
     sam3_client = Sam3Client()
     tmp_path = prep_tmp_path(config)
@@ -1158,26 +1385,80 @@ def detect_door_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rg
     print("Drawer-door detections:", predictions)
     
     matches = drawer_handle_matches(predictions)
-    # Filter matches
-    filtered_matches = [m for m in matches if (m.handle is not None and m.drawer is not None)]
+
+    filtered_matches = [
+        m for m in matches
+        if (m.handle is not None and m.drawer is not None
+            and ("door" in m.drawer.name or "drawer" in m.drawer.name))
+]
+
 
     if not filtered_matches:
-        print("No valid handle-drawer matches found.")
+        print("No valid door-handle matches found.")
         return None, None, None
 
-    # Sort by handle center closeness to drawer edge (xmin or xmax)
-    sorted_matches = sorted(
-        filtered_matches,
-        key=lambda m: min(
-            abs(((m.handle.bbox.xmin + m.handle.bbox.xmax) // 2) - int(m.drawer.bbox.xmin)),
-            abs(((m.handle.bbox.xmin + m.handle.bbox.xmax) // 2) - int(m.drawer.bbox.xmax))
-        )
-    )
-    print("\nFiltered matches sorted by handle closeness to drawer edges:", sorted_matches)
-    test_prints(sorted_matches, rgb_img)
+    if target_pos is not None:
+        # Pick the match whose DOOR projects closest to the expected world position
+        
+        _cam_mat = intrinsics_from_camera('/gripper_camera/color/camera_info')
+        _fx, _fy = _cam_mat[0, 0], _cam_mat[1, 1]
+        _cx, _cy = _cam_mat[0, 2], _cam_mat[1, 2]
+        _tf = tf_node.get_tf_matrix("map", "gripper_camera_color_optical_frame")
+        spin_until_complete(tf_node)
 
-    # Pick the best match
-    best_match = sorted_matches[0]
+        def _door_world_dist(m):
+            """
+            Project the door (container) center pixel into world space and return the 3D
+            Euclidean distance to target_pos
+            """
+            #find door center pixel
+            dx_px = int((m.drawer.bbox.xmin + m.drawer.bbox.xmax) // 2)
+            dy_px = int((m.drawer.bbox.ymin + m.drawer.bbox.ymax) // 2)
+            #check depth value at door center pixel
+            d = depth_img[dy_px, dx_px] / 1000.0
+            if d <= 0:
+                return float('inf')
+            #unproject pixel to camera frame, then transform to world frame
+            px = (dx_px - _cx) * d / _fx
+            py = (dy_px - _cy) * d / _fy
+            world = np.array([px, py, d, 1.0]) @ _tf.T
+            return float(np.linalg.norm(world[:3] - target_pos[:3]))
+
+        #print distances of all matches for debugging
+        print("Match distances to target position:")
+        for m in filtered_matches:
+            dist = _door_world_dist(m)
+            print(f"  - door bbox=({m.drawer.bbox.xmin:.1f},{m.drawer.bbox.ymin:.1f},{m.drawer.bbox.xmax:.1f},{m.drawer.bbox.ymax:.1f}) -> distance={dist:.3f}m")
+ 
+        #pick the match whose door is closest in 3D to the target door position
+        best_match = min(filtered_matches, key=_door_world_dist)
+        dist_error = _door_world_dist(best_match)
+        print(f"Target pos={target_pos} — selected door 3D distance={dist_error:.3f}m")
+        test_prints([best_match], rgb_img)
+
+        # Reject the best match if it is too far from the target position
+        MAX_POS_ERROR = 0.20 #20 cm
+        if dist_error > MAX_POS_ERROR:
+            print(
+                f"[detect_door_handle_sam3] Best match 3D distance {dist_error:.3f}m exceeds "
+                f"threshold {MAX_POS_ERROR}m — target door not detected, returning None."
+            )
+            return None, None, None
+    else:
+        # Sort by handle center closeness to drawer edge (xmin or xmax)
+        sorted_matches = sorted(
+            filtered_matches,
+            key=lambda m: min(
+                abs(((m.handle.bbox.xmin + m.handle.bbox.xmax) // 2) - int(m.drawer.bbox.xmin)),
+                abs(((m.handle.bbox.xmin + m.handle.bbox.xmax) // 2) - int(m.drawer.bbox.xmax))
+            )
+        )
+        print("\nFiltered matches sorted by handle closeness to drawer edges:", sorted_matches)
+        test_prints(sorted_matches, rgb_img)
+
+        # Pick the best match
+        best_match = sorted_matches[0]
+
     hbbox = best_match.handle.bbox
     dbbox = best_match.drawer.bbox
 
@@ -1239,6 +1520,52 @@ def detect_door_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rg
     print(f"Hinge pose (map): {hinge_pose_map}")
 
     return handle_pose_map, open_dir, hinge_pose_map
+
+
+def detect_handle_simple(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.ndarray, prompts: list[str]) -> Pose3D | None:
+    """
+    Close-range handle/knob detector for the gripper camera
+    """
+
+    sam3_client = Sam3Client()
+    predictions = call_sam3(sam3_client, rgb_img, prompts)
+    print("================== SIMPLE HANDLE DETECTION ==================")
+    print("Detections:", predictions)
+
+    handles = [d for d in predictions if "handle" in d.name or "knob" in d.name or "circle" in d.name]
+    if not handles:
+        print("[simple-handle] no handle/knob detected.")
+        return None
+
+    # Only one knob is expected at close range; take the most confident
+    best = max(handles, key=lambda d: d.conf)
+    bb = best.bbox
+    x_px = int((bb.xmin + bb.xmax) // 2)
+    y_px = int((bb.ymin + bb.ymax) // 2)
+    print(f"[simple-handle] selected name={best.name} conf={best.conf:.2f} center=({x_px},{y_px})")
+
+    # Unproject the handle center pixel into the camera frame.
+    camera_matrix = intrinsics_from_camera('/gripper_camera/color/camera_info')
+    fx, fy = camera_matrix[0, 0], camera_matrix[1, 1]
+    cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
+    z = robust_depth_m(depth_img, x_px, y_px)
+
+    if z <= 0:
+        print("[simple-handle] invalid depth at handle center.")
+        return None
+    x = (x_px - cx) * z / fx
+    y = (y_px - cy) * z / fy
+    handle_pose_gripper = np.array((x, y, z, 1.0))
+
+    # Transform into the map frame 
+    tf = tf_node.get_tf_matrix("map", "gripper_camera_color_optical_frame")
+    spin_until_complete(tf_node)
+    handle_pose_map = Pose3D((tf @ handle_pose_gripper)[:3])
+   
+    handle_pose_map.coords_cam = handle_pose_gripper[:3].copy()
+    print(f"[simple-handle] handle pose (map): {handle_pose_map}")
+    return handle_pose_map
+
 
 def test_prints(matches, rgb_img, save_path="handle_door_match_current.png"):
     if not matches:

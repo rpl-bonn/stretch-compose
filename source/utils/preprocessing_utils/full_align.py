@@ -181,13 +181,32 @@ def correct_to_upright(ground_tform_fiducial: np.ndarray) -> np.ndarray:
     return corr_ground_tform_fiducial
 
 
-def draw_point_clouds(scan: PointCloud, autowalk: PointCloud) -> None:
+def remove_dominant_plane(pcd: PointCloud, distance_threshold: float = 0.05) -> PointCloud:
+    """
+    Segment out the largest planar surface (typically the floor) and return the rest
+    """
+
+    if len(pcd.points) < 100:
+        return pcd
+    _, inliers = pcd.segment_plane(distance_threshold=distance_threshold, ransac_n=3, num_iterations=1000)
+    return pcd.select_by_index(inliers, invert=True)
+
+
+def draw_with_frames(scan: PointCloud, autowalk: PointCloud, frames: list, title: str) -> None:
+    scan_temp = copy.deepcopy(scan)
+    autowalk_temp = copy.deepcopy(autowalk)
+    scan_temp.paint_uniform_color([1, 0.706, 0])
+    autowalk_temp.paint_uniform_color([0, 0.651, 0.929])
+    o3d.visualization.draw_geometries([scan_temp, autowalk_temp, *frames], window_name=title)
+
+
+def draw_point_clouds(scan: PointCloud, autowalk: PointCloud, title: str) -> None:
     scan_temp = copy.deepcopy(scan)
     autowalk_temp = copy.deepcopy(autowalk)
     scan_temp.paint_uniform_color([1, 0.706, 0])
     autowalk_temp.paint_uniform_color([0, 0.651, 0.929])
     # scan_temp.transform(transformation)
-    o3d.visualization.draw([scan_temp, autowalk_temp])
+    o3d.visualization.draw([scan_temp, autowalk_temp], title = title)
 
 
 def render_depth(mesh, camera):
@@ -252,9 +271,12 @@ def main() -> None:
     scan_ground = o3d.io.read_point_cloud(pcd_path)
     # o3d.visualization.draw_geometries([mesh_ground, scan_ground])
 
-    autowalk_ply_path = config.get_subpath("merged_point_clouds")
-    autowalk_ply_path = os.path.join(str(autowalk_ply_path), f'{config["pre_scanned_graphs"]["low_res"]}.ply')
-    autowalk_cloud = o3d.io.read_point_cloud(str(autowalk_ply_path))
+    #Testing alignment with rtabmap point cloud
+    # autowalk_ply_path = config.get_subpath("merged_point_clouds")
+    # autowalk_ply_path = os.path.join(str(autowalk_ply_path), f'{config["pre_scanned_graphs"]["low_res"]}.ply')
+    rtabmap_path = os.path.join(config.get_subpath("data"), "rtabmap_point_clouds", "rtabmap_pointcloud.ply")
+    autowalk_cloud = o3d.io.read_point_cloud(rtabmap_path)
+
 
     translation_matrix = np.array([
         [1, 0, 0, x_t],
@@ -277,12 +299,31 @@ def main() -> None:
 
     fiducial_tform_robot = translation_matrix @ rotation_matrix
     robot_tform_fiducial = np.linalg.inv(fiducial_tform_robot)
-    # draw_point_clouds(scan_ground, autowalk_cloud) # before initial alignment
+    draw_point_clouds(scan_ground, autowalk_cloud, title="Before Initial Alignment") # before initial alignment
 
     scan_fiducial = copy.deepcopy(scan_ground).transform(fiducial_tform_ground).transform(robot_tform_fiducial).transform(reflection_matrix)
-    # draw_point_clouds(scan_fiducial, autowalk_cloud) # after initial alignment
+    draw_point_clouds(scan_fiducial, autowalk_cloud, title="After Initial Alignment") # after initial alignment
+    # axes = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
+    # o3d.visualization.draw_geometries([autowalk_cloud, axes])
 
-    robot_tform_icp = icp(scan_fiducial, autowalk_cloud, threshold=0.15)
+
+    voxel = 0.05  # 5 cm
+    scan_ds = scan_fiducial.voxel_down_sample(voxel)
+    auto_ds = autowalk_cloud.voxel_down_sample(voxel)
+    scan_icp_src = remove_dominant_plane(scan_ds)
+    auto_icp_tgt = remove_dominant_plane(auto_ds)
+
+    # multi-stage ICP
+    robot_tform_icp = np.eye(4)
+    for threshold in (0.5, 0.2, 0.1, 0.05):
+        robot_tform_icp = icp(scan_icp_src, auto_icp_tgt, threshold=threshold, trans_init=robot_tform_icp)
+        R = robot_tform_icp[:3, :3]
+        t = robot_tform_icp[:3, 3]
+        angle = np.degrees(np.arccos(np.clip((np.trace(R) - 1) / 2, -1, 1)))
+        print(f"ICP @ {threshold:.2f} m: {angle:.1f}°, {np.linalg.norm(t):.2f} m")
+
+
+    # robot_tform_icp = icp(scan_fiducial, autowalk_cloud, threshold=0.15)
     rot = np.radians(0)
     rotation_matrix = np.array([
         [np.cos(rot), -np.sin(rot), 0, 0],
@@ -292,12 +333,19 @@ def main() -> None:
     ])
     icp_tform_robot = rotation_matrix @ np.linalg.inv(robot_tform_icp)
     scan_icp = copy.deepcopy(scan_fiducial).transform(icp_tform_robot)
-    # draw_point_clouds(scan_icp, autowalk_cloud) # after final alignment
-
+    draw_point_clouds(scan_icp, autowalk_cloud, title="After Final Alignment") # after final alignment
+    
     # get full transformation_matrix
     icp_tform_ground = icp_tform_robot @ reflection_matrix @ robot_tform_fiducial @ fiducial_tform_ground
     mesh_icp = mesh_ground.transform(icp_tform_ground)
     # o3d.visualization.draw_geometries([mesh_icp, scan_icp])
+
+    # debug: where does the frame actually land
+    world_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.5)
+    fiducial_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(size=0.3).transform(
+        icp_tform_ground @ ground_tform_fiducial
+    )
+    draw_with_frames(scan_icp, autowalk_cloud, [world_frame, fiducial_frame], title="Frames check")
 
     # POINT CLOUD HAS BEEN TRANSFORMED with icp_tform_ground
     # now we create the scene folder structure for openmask3d

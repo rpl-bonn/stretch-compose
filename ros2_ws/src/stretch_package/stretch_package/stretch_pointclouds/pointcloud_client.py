@@ -37,6 +37,7 @@ class PointCloudClient(Node):
     self.future.add_done_callback(self.handle_response)
 
   def handle_response(self, future):
+    self.get_logger().info('Handling point cloud response...')
     try:
       res = future.result()
       if res.pointcloud.data:

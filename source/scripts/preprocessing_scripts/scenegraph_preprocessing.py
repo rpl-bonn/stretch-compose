@@ -229,7 +229,9 @@ def main():
         #scene_graph.save_visualization(os.path.join(GRAPH_DIR, "visualization.png"), centroids=True, connections=True, labels=True, frame_center=True)
         scene_graph.visualize(labels=True, connections=True, centroids=True, frame_center=True)
     except Exception as e:
+        import traceback
         print(f"Error: Failed to create scene graph. {e}")
+        traceback.print_exc()
     
     
 if __name__ == "__main__":

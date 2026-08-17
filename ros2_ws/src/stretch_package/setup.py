@@ -35,6 +35,7 @@ setup(
             'pointcloud_client = stretch_package.stretch_pointclouds.pointcloud_client:main',
             'localize_robot = stretch_package.localize_robot:main',
             'move_body = stretch_package.stretch_movement.move_body:main',
+            'mode_controller = stretch_package.stretch_movement.mode_controller:main',
             'move_head = stretch_package.stretch_movement.move_head:main',
             'move_to_position = stretch_package.stretch_movement.move_to_position:main',
             'move_to_pose = stretch_package.stretch_movement.move_to_pose:main',

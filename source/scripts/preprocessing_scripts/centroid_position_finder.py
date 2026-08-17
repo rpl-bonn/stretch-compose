@@ -13,25 +13,11 @@ sys.path.append('/home/ws/')
 from utils.recursive_config import Config
 
 
-def get_latest_scan_folder(scene_graph_path: Path) -> Path:
-    """
-    Return the most recent folder named YYYY_MM_DD under scene_graph_path.
-    """
-    folders = [f for f in Path(scene_graph_path).iterdir() if f.is_dir()]
-    date_folders = []
-    for folder in folders:
-        try:
-            datetime.strptime(folder.name, "%Y_%m_%d")
-            date_folders.append(folder)
-        except ValueError:
-            continue
-
-    if not date_folders:
-        raise FileNotFoundError("No dated folders found in scene_graph directory")
-
-    latest_folder = sorted(date_folders, key=lambda x: x.name)[-1]
-    print(f"Using latest scan folder: {latest_folder.name}")
-    return latest_folder
+# Configs and Paths
+config = Config()
+graph_path = config.get_subpath("scene_graph")
+ending = config["pre_scanned_graphs"]["high_res"]
+GRAPH_DIR = os.path.join(graph_path, ending)
 
 
 def load_drawer_centroids(drawers_folder: Path) -> dict:
@@ -222,10 +208,7 @@ def visualize_drawers():
     print("DRAWER CENTROID POSITION FINDER")
     print("=" * 80)
 
-    config = Config()
-    scene_graph_path = Path(config.get_subpath("scene_graph"))
-
-    latest_folder = get_latest_scan_folder(scene_graph_path)
+    latest_folder = Path(GRAPH_DIR)
     drawers_folder = latest_folder / "drawers"
     if not drawers_folder.exists():
         raise FileNotFoundError(f"Drawers folder not found: {drawers_folder}")

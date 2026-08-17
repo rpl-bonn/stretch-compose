@@ -3,7 +3,7 @@
 <package format="3">
   <name>sam3_inference</name>
   <version>0.0.0</version>
-  <description>TODO: Package description</description>
+  <description>SAM3 ROS2</description>
   <maintainer email="gchencha@uni-bonn.de">Gokul Chenchani</maintainer>
   <license>TODO: License declaration</license>
 

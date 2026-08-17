@@ -3,9 +3,11 @@ All things video and imaging.
 """
 
 from __future__ import annotations
+import time
 
 import cv2
 import numpy as np
+import os
 
 from rclpy.node import Node
 from stretch_package.stretch_images.aligned_depth2color_subscriber import AlignedDepth2ColorSubscriber
@@ -16,7 +18,7 @@ from stretch_package.stretch_images.camera_info_subscriber import CameraInfoSubs
 from stretch_package.stretch_state.frame_transformer import FrameTransformer
 from stretch_package.stretch_movement.move_to_pose import JointPoseController
 
-from utils.robot_utils.basic_movement import set_gripper, spin_until_complete
+from utils.robot_utils.basic_movement import get_joint_states, set_gripper, spin_until_complete
 from utils.importer import PointCloud, Vector3dVector 
 from utils.recursive_config import Config
 
@@ -230,3 +232,152 @@ def point_cloud_from_camera_captures(depth_images: list[(np.ndarray)], topic: st
         pcd_map = pcd_camera @ map_tform_camera.T
         fused_point_clouds += pcd_map
     return fused_point_clouds
+
+def _handle_grasp_error_base(transform_node, handle_pose):
+    """
+    (handle - grasp_center) in base_link, via kinematics only
+    """
+
+    coords_cam = np.asarray(handle_pose.coords_cam, dtype=float)
+    if coords_cam[2] <= 0.05:
+        return None
+    
+    #4x4 transform from base_link to gripper_camera
+    T_base_cam = transform_node.get_tf_matrix("base_link", "gripper_camera_color_optical_frame")
+    spin_until_complete(transform_node)
+
+    #h is the handle position in base_link
+    h = T_base_cam @ np.array([*coords_cam, 1.0])
+    # 4x4 transform from base_link to link_grasp_center
+    T_base_grasp = transform_node.get_tf_matrix("base_link", "link_grasp_center")
+    spin_until_complete(transform_node)
+    #return the error in base_link coordinates
+    return h[:3] - T_base_grasp[:3, 3]
+
+
+def correct_offsets_base_frame(transform_node, joint_pose_node, handle_pose):
+    """
+    Center the gripper on the handle along the base drive axis:
+    translate_mobile_base by the x-component of the base_link error 
+    """
+    deadband_m = 0.005
+    max_step_m = 0.08
+    settle_s   = 2.0
+
+    err = _handle_grasp_error_base(transform_node, handle_pose)
+    if err is None:
+        print("[centering] skipped: handle behind camera or no valid depth")
+        return None
+    
+    correction_m = float(np.clip(err[0], -max_step_m, max_step_m))
+    print(f"[centering] handle-grasp err(base): x={err[0]*100:+.1f} y={err[1]*100:+.1f} "
+          f"z={err[2]*100:+.1f} cm -> translate_mobile_base {correction_m*100:+.1f} cm")
+    if abs(correction_m) < deadband_m:
+        print("[centering] within deadband, no base move")
+        return err
+    
+    joint_pose_node.send_joint_pose({'translate_mobile_base': correction_m})
+    spin_until_complete(joint_pose_node)
+    time.sleep(settle_s)
+    return err
+
+def correct_vertical_offset(transform_node, joint_pose_node, handle_pose, grasp_offset_m: float = 0.0):
+    """
+    move joint_lift by the z-component of the base_link error from _handle_grasp_error_base.
+    """
+
+    deadband_m = 0.005
+    max_step_m = 0.15
+    settle_s   = 2.0
+
+    err = _handle_grasp_error_base(transform_node, handle_pose)
+    if err is None:
+        print("[lift] skipped: handle behind camera or no valid depth")
+        return None
+    delta = float(np.clip(err[2] + grasp_offset_m, -max_step_m, max_step_m))
+    joint_state = get_joint_states()
+    cur_lift = joint_state.position[list(joint_state.name).index('joint_lift')]
+    new_lift = cur_lift + delta
+
+    print(f"[lift] handle-grasp err(base): z={err[2]*100:+.1f} cm  cur_lift={cur_lift*100:.1f} cm  "
+          f"delta={delta*100:+.1f} cm -> new_lift={new_lift*100:.1f} cm")
+    if abs(delta) < deadband_m:
+        print("[lift] within deadband, no adjustment")
+        return err
+    
+    joint_pose_node.send_joint_pose({'joint_lift': new_lift})
+    spin_until_complete(joint_pose_node)
+    time.sleep(settle_s)
+    return err
+
+
+
+def visualize_correction(transform_node, joint_pose_node, handle_pose, IMG_DIR):
+    """
+    Save a debug image showing whether the grasp will land on the handle.
+
+    Projects two points into the current gripper-camera image:
+      green cross = detected handle, red cross   = link_grasp_center
+    """
+
+    rgb_image = get_rgb_picture(
+        RGBImageSubscriber, joint_pose_node,
+        "/gripper_camera/color/image_rect_raw", gripper=True
+    )
+    camera_matrix = intrinsics_from_camera('/gripper_camera/color/camera_info')
+    fx, fy = camera_matrix[0, 0], camera_matrix[1, 1]
+    cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
+
+    def project_to_pixel(point_cam):
+        """Project a camera-frame point (m) to integer pixel coords, or None if behind the camera."""
+        if point_cam[2] <= 0.01:
+            return None
+        u = int(round(fx * point_cam[0] / point_cam[2] + cx))
+        v = int(round(fy * point_cam[1] / point_cam[2] + cy))
+        return u, v
+
+    # Handle in the camera frame
+    tf_cam_from_map = transform_node.get_tf_matrix(
+        "gripper_camera_color_optical_frame", "map"
+    )
+    spin_until_complete(transform_node)
+    handle_in_cam = (tf_cam_from_map @ np.array([*handle_pose.coordinates, 1.0]))[:3]
+
+    # Grasp center in the camera frame 
+    tf_cam_from_base = transform_node.get_tf_matrix(
+        "gripper_camera_color_optical_frame", "base_link"
+    )
+    spin_until_complete(transform_node)
+    tf_base_from_grasp = transform_node.get_tf_matrix("base_link", "link_grasp_center")
+    spin_until_complete(transform_node)
+    grasp_in_base = tf_base_from_grasp[:3, 3]
+    grasp_in_cam = (tf_cam_from_base @ np.array([*grasp_in_base, 1.0]))[:3]
+
+    # Residual error in base_link 
+    handle_in_base = (np.linalg.inv(tf_cam_from_base) @ np.array([*handle_in_cam, 1.0]))[:3]
+    error_in_base = handle_in_base - grasp_in_base
+
+    handle_pixel = project_to_pixel(handle_in_cam)
+    grasp_pixel = project_to_pixel(grasp_in_cam)
+
+    #visualizing
+    vis = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2BGR) if rgb_image.shape[2] == 3 else rgb_image.copy()
+    if handle_pixel is not None:
+        cv2.drawMarker(vis, handle_pixel, (0, 255, 0), cv2.MARKER_CROSS, 40, 2)
+    if grasp_pixel is not None:
+        cv2.drawMarker(vis, grasp_pixel, (0, 0, 255), cv2.MARKER_CROSS, 40, 2)
+    cv2.putText(vis,
+        f"err(base): x={error_in_base[0]*100:+.1f} y={error_in_base[1]*100:+.1f} "
+        f"z={error_in_base[2]*100:+.1f} cm",
+        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+    cv2.putText(vis, "GREEN=handle  RED=grasp center",
+        (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    save_path = os.path.join(IMG_DIR, "centering_aim_debug.png")
+    cv2.imwrite(save_path, vis)
+    print(f"[centering_visualisation] aim debug image saved → {save_path}")
+    print(f"[centering_visualisation] handle pixel: {handle_pixel}  grasp-center pixel: {grasp_pixel}"
+          f"{'  (grasp center outside image/behind camera)' if grasp_pixel is None else ''}")
+    print(f"[centering_visualisation] handle - grasp_center in base_link: "
+          f"x={error_in_base[0]*100:+.1f} cm (translate_mobile_base)  "
+          f"y={error_in_base[1]*100:+.1f} cm (extension axis)  "
+          f"z={error_in_base[2]*100:+.1f} cm (joint_lift)")

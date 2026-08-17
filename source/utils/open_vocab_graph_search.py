@@ -24,7 +24,6 @@ from utils.recursive_config import Config
 from utils.robot_utils.advanced_movement import *
 from utils.robot_utils.basic_movement import *
 from utils.robot_utils.basic_perception import *
-from utils.zero_shot_object_detection import yolo_detect_object
 from utils.openmask_interface import get_mask_points, get_text_similarity
 
 # Adaptable
