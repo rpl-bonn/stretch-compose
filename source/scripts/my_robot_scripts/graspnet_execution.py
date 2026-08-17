@@ -72,6 +72,7 @@ def execute_poses() -> bool:
     joint_pose_node = JointPoseController()
     head_node = HeadJointController(transform_manager.tf_buffer)
     joint_position_node = JointPositionController(transform_manager.tf_buffer)
+    transform_node = FrameTransformer(transform_manager.tf_buffer)
     
     # Get body and grasp pose
     body_pose_distanced, grasp_pose_new, obj_width = graspnet_planning.plan_poses(OBJECT, VIS_BLOCK)
@@ -84,7 +85,7 @@ def execute_poses() -> bool:
     move_body(base_node, body_pose_distanced.to_dimension(2))
     
     # Turn body towards goal object
-    turn_body(joint_pose_node, grasp_pose_new.to_dimension(2), True)
+    turn_body(joint_pose_node, grasp_pose_new.to_dimension(2), transform_node, grasp=True)
     
     # Look at goal position & detect object
     move_head(head_node, grasp_pose_new, -0.01)
@@ -100,7 +101,7 @@ def execute_poses() -> bool:
     else:
         node.get_logger().info(f"{OBJECT} is not at its place anymore.") 
 
-    # Destroy nodes
+    # Destroy nodes 
     transform_manager._shutdown()
     node.destroy_node()  
     stow_node.destroy_node()
@@ -108,6 +109,7 @@ def execute_poses() -> bool:
     joint_pose_node.destroy_node()
     head_node.destroy_node()
     joint_position_node.destroy_node()
+    transform_node.destroy_node()
     rclpy.shutdown()
     
     return success

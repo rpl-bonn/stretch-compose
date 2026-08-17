@@ -25,19 +25,20 @@ from utils.recursive_config import Config
 from utils.robot_utils.advanced_movement import *
 from utils.robot_utils.basic_movement import *
 from utils.robot_utils.basic_perception import *
-from utils.zero_shot_object_detection import yolo_detect_object
 from utils.openmask_interface import get_mask_points
 from utils.openmask_interface import get_text_similarity
 from utils.open_vocab_graph_search import OpenVocabSearch
 from utils.llm_utils import openai_client
 from utils.llm_utils.gemini_client import GeminiLocationPredictor
+from utils.zero_shot_object_detection_sam3 import sam3_detect_object
+ 
 
 # Adaptable
 # Defaults
 VIS_BLOCK_DEFAULT = False
 SAVE_BLOCK_DEFAULT = True
 NO_PROPOSALS_DEFAULT = 3
-OBJECT = "bottle"
+OBJECT = "water bottle"
 
 # Config and Paths
 config = Config()
@@ -116,10 +117,10 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
             checked_furniture_ids.append(furniture_id)
             print(f"{OBJECT} is in the scene graph. Searching for it in/on {furniture} at {target_pos}")
 
-            move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
-            get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
+            move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
+            rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
             get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
-            detected, detection_dict = yolo_detect_object(OBJECT, "head", save_block=save_block)
+            detected, detection_dict = sam3_detect_object(OBJECT, rgb_img, save_block=save_block)
             if detected == False:
                 print(f"Failed to detect {OBJECT} in/on {furniture} despite being in the scene graph.")
                 # oai = openai_client.oai_client
@@ -163,10 +164,10 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
                     print(f"{OBJECT} is in the scene graph. Searching for it in/on {furniture} at {target_pos}")
                     candidate_found_with_high_probability = True
 
-                    move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
-                    get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
+                    move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
+                    rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
                     get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
-                    detected, detection_dict = yolo_detect_object(OBJECT, "head", save_block=save_block)
+                    detected, detection_dict = sam3_detect_object(OBJECT, rgb_img, save_block=save_block)
                 
                
         
@@ -203,10 +204,10 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
                 checked_furniture_ids.append(furniture_id)
                 print(f"Searching for {OBJECT} in/on {furniture} ({target_pos}).")
                 
-                move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
-                get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
+                move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
+                rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
                 get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
-                detected, detection_dict = yolo_detect_object(OBJECT, "head", save_block=save_block)
+                detected, detection_dict = sam3_detect_object(OBJECT, rgb_img, save_block=save_block)
                 if detected:
                     print(f"Found {OBJECT} in/on {furniture}: {detection_dict}")
                     break
@@ -218,7 +219,7 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
             print(f"Found {OBJECT} in/on {furniture}: {detection_dict}")
             # Move closer to the object
             center, body_pose, pcd = searchnet_planning.plan_object_search(transform_node, detection_dict, front_normal, pcd, furniture_id)
-            move_in_front_of(stow_node, base_node, head_node, joint_pose_node, body_pose, center, 0.0, 0.0, 0.0, 0.1, stow=False, grasp=True)
+            move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose, center, 0.0, 0.0, 0.0, 0.1, stow=False, grasp=True)
             
             # Get dynamic point cloud of object
             gripper_tform_map = transform_node.get_tf_matrix("map", "link_grasp_center")

@@ -80,7 +80,48 @@ def get_distance_to_shelf(obj: str, index: int|None=None) -> tuple[float, np.nda
     return max(circle_radius_width, circle_radius_height), furniture_centroid, furniture_name, furniture_id
 
 
-def get_shelf_front_normal(furniture_pcd: o3d.geometry.PointCloud, furniture_name: str="") -> np.ndarray:
+def _front_normal_from_openness(
+    obb: o3d.geometry.OrientedBoundingBox,
+    env_pcd: o3d.geometry.PointCloud,
+    probe_gap: float = 0.6,
+    probe_radius: float = 0.4,
+    floor_thresh: float = 0.05,
+    ceil_thresh: float = 1.6,
+) -> np.ndarray | None:
+    
+    R = np.asarray(obb.R)
+    extents = np.asarray(obb.extent)
+    center = np.asarray(obb.center)
+
+    # Keep only obstacle points (drop floor and ceiling)
+    pts = np.asarray(env_pcd.points)
+    mask = (pts[:, 2] > floor_thresh) & (pts[:, 2] < ceil_thresh)
+    obstacles_xy = pts[mask][:, :2]
+
+    horizontal_axes = np.argsort(np.abs(R[2, :]))[:2]
+
+    best_dir = None
+    best_obstacles = np.inf
+    for axis in horizontal_axes:
+        half_extent = extents[axis] / 2.0
+        for sign in (1.0, -1.0):
+            direction_xy = R[:2, axis] * sign
+            norm = np.linalg.norm(direction_xy)
+            if norm < 1e-6:
+                continue
+            direction_xy = direction_xy / norm
+            # Probe where the robot would stand: just beyond this face, out in front.
+            probe_xy = center[:2] + direction_xy * (half_extent + probe_gap)
+            n_obstacles = int(np.sum(np.linalg.norm(obstacles_xy - probe_xy, axis=1) < probe_radius))
+            print(f"  front candidate dir={np.round(direction_xy, 2)} obstacles_in_front={n_obstacles}")
+            if n_obstacles < best_obstacles:
+                best_obstacles = n_obstacles
+                best_dir = np.array([direction_xy[0], direction_xy[1], 0.0])
+
+    return best_dir
+
+
+def get_shelf_front_normal(furniture_pcd: o3d.geometry.PointCloud, furniture_name: str="", env_pcd: o3d.geometry.PointCloud=None) -> np.ndarray:
     """
     Get the normal of the front face of the furniture.
     This function calculates the normal of the front face of the furniture by finding the largest vertical face
@@ -98,7 +139,14 @@ def get_shelf_front_normal(furniture_pcd: o3d.geometry.PointCloud, furniture_nam
     R = obb.R
     extents = obb.extent
     center = obb.center
-    
+
+    # Prefer an open-space-based front direction when the environment cloud is available
+    if env_pcd is not None and furniture_name not in ["armchair", "couch", "sofa"]:
+        open_normal = _front_normal_from_openness(obb, env_pcd)
+        if open_normal is not None:
+            print(f"Front normal (open-space heuristic): {np.round(open_normal, 3)}")
+            return open_normal
+
     z_alignment = np.abs(R.T @ np.array([0, 0, 1]))
     vertical_axis = np.argsort(z_alignment)[-2]  # Sort in descending order
     R_new = np.zeros((3, 3))
@@ -254,7 +302,7 @@ def plan_furniture_search(obj: str, index: int|None=None) -> tuple[Pose3D, str, 
         if (np.allclose(furniture_center, center, atol=0.1)):
             print(f"{furniture_name} found!")
             # Get normal of furniture front face
-            front_normal = get_shelf_front_normal(furniture_pcd, furniture_name)
+            front_normal = get_shelf_front_normal(furniture_pcd, furniture_name, env_pcd=env_pcd)
             # Calculate body position in front of furniture
             body_pose = body_planning_front(
                 env_pcd,
@@ -281,6 +329,8 @@ def plan_furniture_search_by_label(label: str, scene_data: dict) -> list[tuple]:
     LABEL_TO_CLIP_QUERY = {
         "shelf": "shelf, bookshelf, kitchen counter, kallax",
         "cabinet": "kitchen cabinet",
+        "table": "table, dining table, coffee table, end table",
+        "kitchen counter" : "counter"
     }
     clip_query = LABEL_TO_CLIP_QUERY.get(label, label)
 
@@ -412,7 +462,7 @@ def filter_drawers(in_scene_graph: bool, graph_data: dict, connections: dict, ch
 
 def plan_door_search(furniture_name: str, center: np.ndarray, drawer_center: Pose3D, dist: float) -> tuple[Pose3D, np.ndarray]:
     """
-    Plan the search for the object inside drawers.
+    Plan to reach the door handle of the furniture.
     """
     # Get all cabinets/shelfs in the environment
     body_pose = None
@@ -446,7 +496,7 @@ def plan_door_search(furniture_name: str, center: np.ndarray, drawer_center: Pos
 
 def plan_door_search_modified(furniture_name: str, center: np.ndarray, drawer_center: Pose3D, dist: float) -> tuple[Pose3D, np.ndarray]:
     """
-    Plan the search for the object inside drawers.
+    Plan to reach the door handle of the furniture.
     """
     # Get all cabinets/shelfs in the environment
     body_pose = None
