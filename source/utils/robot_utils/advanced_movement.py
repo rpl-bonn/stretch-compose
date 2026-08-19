@@ -19,6 +19,7 @@ from utils.point_clouds import icp
 from utils.recursive_config import Config
 from utils.time import convert_time
 from scripts.my_robot_scripts.graspnet_testing import visualize_grasps
+from stretch_package.stretch_movement.mode_controller import ModeController
 from stretch_package.stretch_movement.move_body import BaseController
 from stretch_package.stretch_movement.move_to_pose import JointPoseController
 from stretch_package.stretch_movement.move_to_position import JointPositionController
@@ -567,13 +568,29 @@ def move_in_front_of(
     Returns:
         bool: Whether the base movement succeeded.
     """
+    mode_node = None
+    if NAV_BACKEND == "nav2":
+        mode_node = ModeController()
+        mode_node.switch_to_position_mode()
+
     if stow:
         print('#######################################')
         stow_arm(stow_node)
         print('#######################################')
+
+    print("NOW DRIVING")
+    print(f"Body pose: {body_pose.as_ndarray()}")
+    reached = move_body(base_node, body_pose.to_dimension(2))
+    if not reached:
+        print("WARNING: did not reach the planned body pose; the target may be out of reach.")
+
     print("NOW TURNING")
     print(f"Target center: {target_center.as_ndarray()}")
     turn_body(pose_node, target_center.to_dimension(2), transform_node, grasp=grasp)
+
+    if mode_node is not None:
+        mode_node.destroy_node()
+
     if grasp:
         look_ahead(pose_node)
         unstow_arm(pose_node, target_center, yaw=yaw, pitch=pitch, roll=roll, lift=lift)
@@ -581,7 +598,7 @@ def move_in_front_of(
         time.sleep(2)
         move_head(head_node, target_center, tilt_bool=True)
         time.sleep(1)
-    return True
+    return reached
         
 
 def move_in_side_of(

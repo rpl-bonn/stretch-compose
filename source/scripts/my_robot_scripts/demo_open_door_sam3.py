@@ -232,7 +232,7 @@ def plan_search(furniture_name: str, furniture_center: np.ndarray, target_pose: 
     # if "bookshelf" in furniture_name:
     print("Planning for Bookshelf")
     if purpose in ("door", "handle", "look"):
-        body_pose, front_normal = searchnet_planning.plan_door_search(furniture_name, furniture_center, target_pose, 0.6)
+        body_pose, front_normal = searchnet_planning.plan_door_search(furniture_name, furniture_center, target_pose, 0.7)
     
     return body_pose, front_normal
 
@@ -293,8 +293,11 @@ def open_door_ik(joint_position_node: JointPositionController, joint_pose_node: 
     
     handle_pose.coordinates[1] += -0.04
 
-    approach_pose = pose_distanced(handle_pose, 0.01)
+    approach_pose = pose_distanced(handle_pose, 0.0)
     approach_pose.coordinates[2] = handle_pose.coordinates[2]
+
+    #add extension offset +1cm
+    # approach_pose.coordinates[0] += 0.01
 
     move_arm(joint_position_node, approach_pose, roll=roll)
     print("Arm moved to handle pose for opening door.")
@@ -329,6 +332,8 @@ def open_door_ik(joint_position_node: JointPositionController, joint_pose_node: 
     time.sleep(1.0)
 
     #close gripper
+    set_gripper(joint_pose_node, -0.17)
+    time.sleep(1.0)
     set_gripper(joint_pose_node, -0.35)
     time.sleep(1.0)
 
