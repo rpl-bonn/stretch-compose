@@ -15,13 +15,14 @@ class Sam3Client(Node):
     def __init__(self):
         super().__init__('sam3_python_client')
         self.bridge = CvBridge()
-        self.get_logger().info(f"Sam3Client loaded from: {__file__}")
+        # self.get_logger().info(f"Sam3Client loaded from: {__file__}")
         self.cli = self.create_client(
             InferenceSam3,
             'run_sam3_inference'
         )
         while not self.cli.wait_for_service(timeout_sec=1.0):
-            self.get_logger().warn("Waiting for SAM3 service 'run_sam3_inference'...")
+            # self.get_logger().warn("Waiting for SAM3 service 'run_sam3_inference'...")
+            pass
 
     def call(self, image, prompts):
 
@@ -58,15 +59,15 @@ if __name__ == "__main__":
             ["door", "knob"]
         )
 
-        print("\n===== INFERENCE RESULTS =====")
-        print("detections:", detections)
-        for det in detections:
-            print(
-                f"Detection(name='{det.name}', "
-                f"conf={det.conf}, "
-                f"bbox=({det.bbox.xmin}, {det.bbox.ymin}, "
-                f"{det.bbox.xmax}, {det.bbox.ymax}))"
-            )
+        # print("\n===== INFERENCE RESULTS =====")
+        # print("detections:", detections)
+        # for det in detections:
+        #     print(
+        #         f"Detection(name='{det.name}', "
+        #         f"conf={det.conf}, "
+        #         f"bbox=({det.bbox.xmin}, {det.bbox.ymin}, "
+        #         f"{det.bbox.xmax}, {det.bbox.ymax}))"
+        #     )
     finally:
         node.destroy_node()
         rclpy.shutdown()

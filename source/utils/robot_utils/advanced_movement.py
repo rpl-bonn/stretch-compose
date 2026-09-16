@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import contextlib
+import io
+import os
 import time
 import numpy as np
 import open3d as o3d
 
 import tf2_ros
 from utils.robot_utils.global_parameters import *
-from utils.robot_utils.basic_perception import check_object_distance, correct_offsets_base_frame, visualize_correction
+from utils.robot_utils.basic_perception import check_object_distance, correct_offsets_base_frame, extension_to_handle, visualize_correction
 
 from utils.robot_utils.basic_movement import *
 from scipy.spatial.transform import Rotation
@@ -19,6 +22,7 @@ from utils.point_clouds import icp
 from utils.recursive_config import Config
 from utils.time import convert_time
 from scripts.my_robot_scripts.graspnet_testing import visualize_grasps
+from stretch_package.stretch_movement.mode_controller import ModeController
 from stretch_package.stretch_movement.move_body import BaseController
 from stretch_package.stretch_movement.move_to_pose import JointPoseController
 from stretch_package.stretch_movement.move_to_position import JointPositionController
@@ -68,30 +72,96 @@ def move_arm_distanced(node: JointPositionController, pose: Pose3D, distance: fl
     return pose_dist
 
 
-def positional_grab(position_node: JointPositionController, pose_node: JointPoseController, pose: Pose3D, distance_start: float, distance_end: float, widths) -> None:
+#silence the logs for debugging
+SAM3_QUIET_WHILE_SERVOING = True
+
+
+def sam3_box_detector(object_name: str, image: np.ndarray):
+    
+    from utils.zero_shot_object_detection_sam3 import sam3_detect_object
+
+    if SAM3_QUIET_WHILE_SERVOING:
+        with contextlib.redirect_stdout(io.StringIO()):
+            detected, detection = sam3_detect_object(object_name, image)
+    else:
+        detected, detection = sam3_detect_object(object_name, image)
+    return detection['box'] if detected else None
+
+
+def positional_grab(position_node: JointPositionController, pose_node: JointPoseController, pose: Pose3D, distance_start: float, distance_end: float, widths, servo_node=None, servo_object: str | None = None, servo_kwargs: dict | None = None, fallback_open_loop: bool = False, attempts: int = 2) -> bool:
     """
     Grab something at a specified position. The gripper will first move towards the pose, but offset by distance_start
     in the opposite direction of the viewing direction. Then it will move towards the specified pose offset by distance_end.
     So in essence, the direction of the pose specifies the axis along which it moves.
+
+    Pass a VisualServoController and an object name to close the loop on the final approach:
+    the gripper camera then measures the fingertip-to-object error directly and corrects it,
+    which absorbs the localization drift and point cloud staleness the open-loop move cannot
+    see. Without servo_node the behaviour is unchanged.
+
     :param position_node: JointPositionController ROS2 node
     :param pose_node: JointPoseController ROS2 node
     :param pose: pose to grab
     :param distance_start: distance from which to start grab
     :param distance_end: distance at which to end grab
-    :param already_gripping: whether to NOT open up the gripper in the beginning
+    :param widths: gripper width of the chosen grasp
+    :param servo_node: optional VisualServoController for a closed-loop final approach
+    :param servo_object: text prompt naming the object to servo onto
+    :param servo_kwargs: extra arguments forwarded to servo_to_object
+    :param fallback_open_loop: run the distanced approach when servoing fails or is not used
+    :param attempts: how many times to re-approach when the grasp is not confirmed
+    :return: whether the object is actually held; always True on the unverifiable open-loop path
     """
-    # Move arm to grab start position
-    move_arm_distanced(position_node, pose, distance_start)
-    set_gripper(pose_node, True)
-    # Move arm to grab end position and grab
-    move_arm_distanced(position_node, pose, distance_end)
-    # Approach slowly when slightly inaccurate
-    distance_finetuned = check_object_distance(pose_node)
-    move_arm_distanced(position_node, pose, distance_finetuned)
-    set_gripper(pose_node, (widths-0.06)/0.22)
+
+    max_attempts = attempts if servo_node is not None else 1
+    grasped = False
+
+    for attempt in range(1, max_attempts + 1):
+        # Move arm to grab start position
+        move_arm_distanced(position_node, pose, distance_start)
+        set_gripper(pose_node, True)
+
+        servoed = False
+        if servo_node is not None and servo_object:
+            kwargs = {'debug_image_path': os.path.join(IMG_DIR, 'visual_servo_last_frame.png')}
+            kwargs.update(servo_kwargs or {})
+            result = servo_node.servo_to_object(servo_object, sam3_box_detector, **kwargs)
+            print(f"Visual servoing (attempt {attempt}/{max_attempts}): {result}")
+            servoed = result.success
+            if not servoed and not fallback_open_loop:
+                print("WARNING: servoing did not converge and fallback_open_loop is off, so the "
+                      "gripper closes where it is. Expect the grasp to miss.")
+
+        if not servoed and fallback_open_loop:
+            # Move arm to grab end position and grab
+            move_arm_distanced(position_node, pose, distance_end)
+            # Approach slowly when slightly inaccurate
+            distance_finetuned = check_object_distance(pose_node)
+            move_arm_distanced(position_node, pose, distance_finetuned)
+
+        set_gripper(pose_node, (widths-0.06)/0.22)
+
+        if servo_node is None:
+            # No gripper camera in play, so there is nothing to check the grasp against.
+            grasped = True
+            break
+
+        verification = servo_node.verify_grasp(expected_width_m=widths)
+        print(f"Grasp check (attempt {attempt}/{max_attempts}): {verification}")
+        if verification.grasped:
+            grasped = True
+            break
+        if attempt < max_attempts:
+            print("Grasp not confirmed, reopening and approaching again.")
+            set_gripper(pose_node, True)
+
     # Move arm back to grab start position
     carry_arm(pose_node)
-    
+    return grasped
+
+
+
+
      
 def pull_door(pos_node: JointPositionController, pose_node: JointPoseController, transform_node: FrameTransformer, handle_center: Pose3D, hinge_center: Pose3D, opens_to: str) -> None:
     """
@@ -151,16 +221,28 @@ def pull_drawer(pose_node: JointPoseController):
     time.sleep(2.0)
 
 def pull_and_check_drawer(pose_node: JointPoseController, transform_node: FrameTransformer, measure_handle, IMG_DIR,
-                          lateral_tol: float = 0.015, max_corrections: int = 1) -> None:
+                          lateral_tol: float = 0.015, max_corrections: int = 1,
+                          approach_standoff: float = 0.10, grasp_standoff: float = 0.0,
+                          pull_back_extension: float = 0.05) -> bool:
     """
     Pull a drawer open with a mid-approach centering check.
     """
 
     set_gripper(pose_node, 0.4)
-    pull_pose_start = {'wrist_extension': (0.35, 85.0)} #0.55 is max
-    pose_node.send_joint_pose(pull_pose_start)
+
+    
+    handle_pose = measure_handle()
+    if handle_pose is None:
+        print("[pull] no handle detected, not extending the arm")
+        return False
+    approach_extension = extension_to_handle(transform_node, handle_pose, standoff=approach_standoff)
+    if approach_extension is None:
+        print("[pull] could not measure the reach to the handle, not extending the arm")
+        return False
+
+    pose_node.send_joint_pose({'wrist_extension': (approach_extension, 85.0)})
     spin_until_complete(pose_node)
-    print("Reached halfway pose, checking lateral offset to handle")
+    print(f"Reached approach pose at {approach_extension*100:.1f} cm, checking lateral offset to handle")
     time.sleep(2.0)
 
     for attempt in range(max_corrections):
@@ -177,23 +259,37 @@ def pull_and_check_drawer(pose_node: JointPoseController, transform_node: FrameT
             break
     else:
         print(f"[pull] still {err[0]*100:+.1f} cm off after {max_corrections} corrections, pulling anyway")
-    
+
     if handle_pose is not None:
         try:
             visualize_correction(transform_node, pose_node, handle_pose, IMG_DIR=IMG_DIR)
         except Exception as vis_error:
             print(f"[pull] visualisation failed (non-critical): {vis_error}")
-    pull_pose_max = {'wrist_extension': (0.55, 85.0)}
-    pose_node.send_joint_pose(pull_pose_max)
+
+    handle_pose = measure_handle()
+    grasp_extension = None
+    if handle_pose is not None:
+        grasp_extension = extension_to_handle(transform_node, handle_pose, standoff=grasp_standoff)
+    if grasp_extension is None:
+        print("[pull] lost the handle at the approach pose, not reaching further")
+        return False
+
+
+    set_gripper(pose_node, 0.35)
+    time.sleep(1.0)
+
+    pose_node.send_joint_pose({'wrist_extension': (grasp_extension+0.02, 85.0)})
     spin_until_complete(pose_node)
     time.sleep(2.0)
     # Close gripper to grab handle and pull drawer
     set_gripper(pose_node, -0.01)
-    pull_pose_end = {'wrist_extension': 0.05}
-    pose_node.send_joint_pose(pull_pose_end)
+    pose_node.send_joint_pose({'wrist_extension': pull_back_extension})
     spin_until_complete(pose_node)
     time.sleep(2.0)
 
+    set_gripper(pose_node, 0.5)
+    time.sleep(1.0)
+    return True
 
 
 def push(pose_node: JointPoseController, height: float) -> None:
@@ -206,23 +302,42 @@ def push(pose_node: JointPoseController, height: float) -> None:
     :param start_distance: how far from the button to start push
     :param end_distance: how far to push
     """
-    # Move arm in front of the drawer
-    push_pose = {'wrist_extension': 0.0, 'joint_lift': height, 'joint_wrist_pitch': 0.0}
+
+    # Lift 2 cm from wherever the arm is now
+    joint_states = get_joint_states()
+    joint_lift = joint_states.position[joint_states.name.index('joint_lift')]
+    push_pose = {'joint_lift': joint_lift + 0.15}
     pose_node.send_joint_pose(push_pose)
     spin_until_complete(pose_node)
+    time.sleep(3.0)
+
+    push_pose = {'wrist_extension': 0.0}
+    pose_node.send_joint_pose(push_pose)
+    spin_until_complete(pose_node)
+    time.sleep(1.0)
+
+    push_pose = {'joint_lift': height}
+    pose_node.send_joint_pose(push_pose)
+    spin_until_complete(pose_node)
+
     time.sleep(2.0)
-    # Push drawer
-    push_pose = {'wrist_extension': (0.40, 50.0)}
+
+    #reset wrist roll
+    push_pose = {'joint_wrist_roll': 0.0, 'joint_wrist_pitch': 0.0, 'joint_wrist_yaw': 0.0}
     pose_node.send_joint_pose(push_pose)
     spin_until_complete(pose_node)
-    time.sleep(10.0)
-    # Open gripper before retracting to avoid snagging on the drawer frame
-    # set_gripper(pose_node, 0.4)
-    # Retract arm — force-limited so it stops gracefully if there is residual resistance
+    time.sleep(1.0)
+
+    # Push drawer
+    push_pose = {'wrist_extension': (0.50, 50.0)}
+    pose_node.send_joint_pose(push_pose)
+    spin_until_complete(pose_node)
+    time.sleep(5.0)
+
     push_pose = {'wrist_extension': (0.1, 40.0)}
     pose_node.send_joint_pose(push_pose)
     spin_until_complete(pose_node)
-    time.sleep(10.0)
+    time.sleep(2.0)
 
 def open_door(pose_node: JointPoseController):
     """
@@ -407,7 +522,9 @@ def find_new_grasp_dynamically(
     config: Config,
     pcd_obj,
     pcd_env,
-) -> None:
+    servo_node=None,
+    servo_object: str | None = None,
+) -> bool:
     """
     Adaptive grasp based on collecting a new point cloeud close to the supposed grasp position allowing it to adjust for
     some drift in localization. This method specifically creates a new point cloud at the supposed position, calculates
@@ -421,6 +538,9 @@ def find_new_grasp_dynamically(
     :param offset: increments in which to move the camera when collecting new PCD
     :param tolerance: tolerance for maximum possible drift
     :param degrees: whether increments is in degrees (True) or radians (False)
+    :param servo_node: optional VisualServoController closing the loop on the final approach
+    :param servo_object: text prompt naming the object to servo onto
+    :return: whether the object ended up held
     """
     # Remove lowest points from object to prevent low grasps
     points = np.asarray(pcd_obj.points)
@@ -458,7 +578,7 @@ def find_new_grasp_dynamically(
 
         if len(tf_matrices) == 0:
             print("Error: No grasps survived filtering (all outside the yaw window).")
-            return
+            return False
         if DEBUG_GRASP:
             print(f"[grasp-debug] {len(tf_matrices)} grasps survived filter; top score={scores[0]:.1f} "
                   f"width={widths[0]:.3f} pos={np.round(tf_matrices[0][:3, 3], 3)}")
@@ -473,11 +593,13 @@ def find_new_grasp_dynamically(
                   f"(adapt_grasp moved it by {delta})")
     except Exception as e:
         print(f"Error: Failed predicting grasp. {e}")
-        return
+        return False
     try:
-        positional_grab(pos_node, pose_node, final_grasp, distance_start, distance_end, widths[0])
+        return positional_grab(pos_node, pose_node, final_grasp, distance_start, distance_end, widths[0],
+                               servo_node=servo_node, servo_object=servo_object)
     except Exception as e:
         print(f"Error: Failed grabbing object. {e}")
+        return False
 
 
 def look_into_drawer(pose_node: JointPoseController, handle_pose: Pose3D):
@@ -490,13 +612,26 @@ def look_into_drawer(pose_node: JointPoseController, handle_pose: Pose3D):
         handle_pose (Pose3D): 3D position of drawer handle
     """
     print("Looking into drawer...")
-    height = handle_pose.coordinates[2] + 0.3
-    gripper_pose = {'wrist_extension': 0.01 , 'gripper_aperture': 1.0}
+    height = handle_pose.coordinates[2] + 0.35
+
+    #pull->open gripper->roll back to 0->lift up->extend wrist->pitch down->servo
+
+
+    gripper_pose = {'joint_wrist_roll': 0.0}
     pose_node.send_joint_pose(gripper_pose)
     spin_until_complete(pose_node)
-    gripper_pose = {'joint_lift': height, 'wrist_extension': 0.2 , 'joint_wrist_pitch': -np.pi/4, 'joint_wrist_roll': 0.0}
+    time.sleep(1.0)
+        
+    gripper_pose = {'joint_lift': height}
     pose_node.send_joint_pose(gripper_pose)
     spin_until_complete(pose_node)
+    time.sleep(1.0)
+
+    gripper_pose =  {'gripper_aperture': 1.0, 'wrist_extension': 0.5 , 'joint_wrist_pitch': -np.pi/2.5, 'joint_wrist_roll': 0.0}
+    pose_node.send_joint_pose(gripper_pose)
+    spin_until_complete(pose_node)
+    time.sleep(1.0)
+
     
 def look_into_door(pose_node: JointPoseController, handle_pose: Pose3D):
     """
@@ -567,13 +702,27 @@ def move_in_front_of(
     Returns:
         bool: Whether the base movement succeeded.
     """
+
+    mode_node = None
+    if NAV_BACKEND == "nav2":
+        mode_node = ModeController()
+        mode_node.switch_to_position_mode()
+
     if stow:
         print('#######################################')
         stow_arm(stow_node)
         print('#######################################')
+
+    print("NOW DRIVING")
+    print(f"Body pose: {body_pose.as_ndarray()}")
+    reached = move_body(base_node, body_pose.to_dimension(2))
+
     print("NOW TURNING")
     print(f"Target center: {target_center.as_ndarray()}")
     turn_body(pose_node, target_center.to_dimension(2), transform_node, grasp=grasp)
+
+    if mode_node is not None:
+        mode_node.destroy_node()
     if grasp:
         look_ahead(pose_node)
         unstow_arm(pose_node, target_center, yaw=yaw, pitch=pitch, roll=roll, lift=lift)
@@ -581,7 +730,7 @@ def move_in_front_of(
         time.sleep(2)
         move_head(head_node, target_center, tilt_bool=True)
         time.sleep(1)
-    return True
+    return reached
         
 
 def move_in_side_of(

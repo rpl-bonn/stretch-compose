@@ -18,6 +18,7 @@ from stretch_package.stretch_movement.move_head import HeadJointController
 from stretch_package.stretch_movement.move_to_pose import JointPoseController
 from stretch_package.stretch_movement.move_to_position import JointPositionController
 from stretch_package.stretch_movement.stow_arm import StowArmController
+from stretch_package.stretch_movement.visual_servo import VisualServoController
 from stretch_package.stretch_state.frame_transformer import FrameTransformer
 from utils.coordinates import Pose3D
 from utils.point_clouds import collect_dynamic_point_cloud
@@ -38,7 +39,8 @@ from utils.zero_shot_object_detection_sam3 import sam3_detect_object
 VIS_BLOCK_DEFAULT = False
 SAVE_BLOCK_DEFAULT = True
 NO_PROPOSALS_DEFAULT = 3
-OBJECT = "water bottle"
+OBJECT = "tennis ball"
+USE_VISUAL_SERVOING = True
 
 # Config and Paths
 config = Config()
@@ -103,7 +105,8 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
     head_node = HeadJointController(transform_manager.tf_buffer)
     joint_position_node = JointPositionController(transform_manager.tf_buffer)
     transform_node = FrameTransformer(transform_manager.tf_buffer)
-     
+    servo_node = VisualServoController() if USE_VISUAL_SERVOING else None
+
     try: 
         with open(os.path.join(GRAPH_DIR, "graph.json"), "r") as file:
             graph_data = json.load(file)
@@ -113,22 +116,27 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
         # A: Object is in the scene graph
         if OBJECT in graph_data["node_labels"]:
             in_scene_graph = True
-            target_pos, furniture, front_normal, body_pose, furniture_id  = searchnet_planning.plan_furniture_search(OBJECT)
-            checked_furniture_ids.append(furniture_id)
-            print(f"{OBJECT} is in the scene graph. Searching for it in/on {furniture} at {target_pos}")
+            try:
+                target_pos, furniture, front_normal, body_pose, furniture_id  = searchnet_planning.plan_furniture_search(OBJECT)
+            except (KeyError, ValueError, FileNotFoundError) as e:
+                print(f"Cannot plan a search for {OBJECT} from the scene graph: {e}")
+                target_pos = None
+            if target_pos is not None:
+                checked_furniture_ids.append(furniture_id)
+                print(f"{OBJECT} is in the scene graph. Searching for it in/on {furniture} at {target_pos}")
 
-            move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
-            rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
-            get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
-            detected, detection_dict = sam3_detect_object(OBJECT, rgb_img, save_block=save_block)
-            if detected == False:
-                print(f"Failed to detect {OBJECT} in/on {furniture} despite being in the scene graph.")
-                # oai = openai_client.oai_client
-                # img_path = os.path.join(IMG_DIR, f"camera_image_rgb.png")
-                # result = openai_client.check_image_response_for_object(oai, room_json_path, OBJECT, "gpt-4o-mini")
-                gemini_client = GeminiLocationPredictor()
-                img_path = os.path.join(IMG_DIR, f"camera_image_rgb.png")
-                result = gemini_client.check_image_response_for_object(img_path, OBJECT)
+                move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
+                rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
+                get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
+                detected, detection_dict = sam3_detect_object(OBJECT, rgb_img, save_block=save_block)
+                if detected == False:
+                    print(f"Failed to detect {OBJECT} in/on {furniture} despite being in the scene graph.")
+                    # oai = openai_client.oai_client
+                    # img_path = os.path.join(IMG_DIR, f"camera_image_rgb.png")
+                    # result = openai_client.check_image_response_for_object(oai, room_json_path, OBJECT, "gpt-4o-mini")
+                    gemini_client = GeminiLocationPredictor()
+                    img_path = os.path.join(IMG_DIR, f"camera_image_rgb.png")
+                    result = gemini_client.check_image_response_for_object(img_path, OBJECT)
         else:     
             # Check if location proposals already exist for the object
             object_filename = f"{OBJECT.replace(' ', '_')}.json"
@@ -138,7 +146,9 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
                     with open(object_location_file, "r") as loc_file:
                         loc_data = json.load(loc_file)
                         if isinstance(loc_data, dict) and "locations" in loc_data:
-                            if isinstance(loc_data["locations"], list) and len(loc_data["locations"]) == 3:
+                            # Any non-empty list counts, so a hand-written single-entry file is
+                            # honoured instead of being ignored and regenerated by the LLM.
+                            if isinstance(loc_data["locations"], list) and len(loc_data["locations"]) >= 1:
                                 location_proposals_already_exist = True
                 except Exception as e:
                     print(f"Error reading location proposals file: {e}")
@@ -159,15 +169,21 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
                 if candidate_found and probability > 0.4:
                     print(f"Searching for {OBJECT} in/on {likely_furniture_label} (id: {likely_furniture_id}) with combined probability {probability:.3f}.")
                     result = ovs.result_to_json(OBJECT, likely_furniture_id, likely_furniture_label, probability, "unknown", object_location_json_path)
-                    target_pos, furniture, front_normal, body_pose, furniture_id  = searchnet_planning.plan_furniture_search(OBJECT, 0)
-                    checked_furniture_ids.append(furniture_id)
-                    print(f"{OBJECT} is in the scene graph. Searching for it in/on {furniture} at {target_pos}")
-                    candidate_found_with_high_probability = True
+                    try:
+                        target_pos, furniture, front_normal, body_pose, furniture_id  = searchnet_planning.plan_furniture_search(OBJECT, 0)
+                    except (KeyError, ValueError, FileNotFoundError) as e:
+                        # This candidate cannot be approached; fall through to the LLM location
+                        # proposals below instead of aborting the whole search.
+                        print(f"Cannot plan a search in front of {likely_furniture_label}: {e}")
+                    else:
+                        checked_furniture_ids.append(furniture_id)
+                        print(f"{OBJECT} is in the scene graph. Searching for it in/on {furniture} at {target_pos}")
+                        candidate_found_with_high_probability = True
 
-                    move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
-                    rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
-                    get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
-                    detected, detection_dict = sam3_detect_object(OBJECT, rgb_img, save_block=save_block)
+                        move_in_front_of(stow_node, base_node, head_node, joint_pose_node, transform_node, body_pose, target_pos, 0.0, 0.0, 0.0, 0.0, stow=True, grasp=False)
+                        rgb_img = get_rgb_picture(RGBImageSubscriber, joint_pose_node, '/camera/color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
+                        get_depth_picture(AlignedDepth2ColorSubscriber, joint_pose_node, '/camera/aligned_depth_to_color/image_raw', gripper=False, save_block=save_block, vis_block=vis_block)
+                        detected, detection_dict = sam3_detect_object(OBJECT, rgb_img, save_block=save_block)
                 
                
         
@@ -177,24 +193,35 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
             print(f"No suitable furniture found for {OBJECT} with high enough probability. Asking openai for likely locations.")
             # oai = openai_client.oai_client
             # result = openai_client.ask_for_shelf_with_room_json(oai, room_json_path, OBJECT, "trash can", "gpt-4o-mini")
+            if not os.path.exists(room_json_path):
+                print(f"WARNING: {room_json_path} does not exist, so the LLM has no room layout to "
+                      f"reason about. Generate it from scene.json first (see gemini_client.py).")
             gemini_client = GeminiLocationPredictor()
             result = gemini_client.ask_for_shelf_with_room_json(room_json_path, OBJECT)
-            
+
             filename = f"{OBJECT.replace(' ', '_')}.json"
             object_location_json_path_llm_filename = os.path.join(object_location_json_path, filename)
-            print(f"Saving object location prediction to {object_location_json_path_llm_filename}")
-            if not os.path.exists(object_location_json_path_llm_filename):
-                os.makedirs(os.path.dirname(object_location_json_path_llm_filename), exist_ok=True)
-            with open(object_location_json_path_llm_filename, 'w') as f:
-                json.dump(result, f, indent=4)
-            location_proposals_already_exist = True
+            # The predictor returns None when it fails, and writing that would overwrite a good
+            # earlier proposal with 'null' - which then breaks every later run for this object.
+            if isinstance(result, dict) and result.get("locations"):
+                print(f"Saving object location prediction to {object_location_json_path_llm_filename}")
+                if not os.path.exists(object_location_json_path_llm_filename):
+                    os.makedirs(os.path.dirname(object_location_json_path_llm_filename), exist_ok=True)
+                with open(object_location_json_path_llm_filename, 'w') as f:
+                    json.dump(result, f, indent=4)
+                location_proposals_already_exist = True
+            else:
+                print(f"No usable location proposals for {OBJECT} (got {result!r}); "
+                      f"keeping any existing proposals file untouched.")
+                # Only walk the proposal loop below if a usable file actually exists.
+                location_proposals_already_exist = os.path.exists(object_location_json_path_llm_filename)
             
         if (not candidate_found_with_high_probability or not detected) and location_proposals_already_exist:
             print(f"Checking for {OBJECT} at all locations proposed by LLM.")
             for i in range(NO_PROPOSALS_DEFAULT):
                 try:
                     target_pos, furniture, front_normal, body_pose, furniture_id  = searchnet_planning.plan_furniture_search(OBJECT, i)
-                except (KeyError, ValueError) as e:
+                except (KeyError, ValueError, FileNotFoundError) as e:
                     print(f"Skipping proposal {i}: {e}")
                     continue
                 # Skip if already checked
@@ -228,8 +255,10 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
             pcd_obj, pcd_env = collect_dynamic_point_cloud(OBJECT, joint_position_node, joint_pose_node, transform_node, start_pose, center, pcd)
                 
             # Find grasp position
-            find_new_grasp_dynamically(joint_position_node, joint_pose_node, transform_node, body_pose, 0.15, 0.05, config, pcd_obj, pcd_env)
-            success = True
+            # success now reflects a verified grasp rather than 'we ran the grasp code'.
+            success = find_new_grasp_dynamically(joint_position_node, joint_pose_node, transform_node, body_pose, 0.15, 0.05, config, pcd_obj, pcd_env,
+                                                 servo_node=servo_node, servo_object=OBJECT)
+            print(f"Grasp {'succeeded' if success else 'FAILED'} for {OBJECT}.")
     
     except Exception as e:
         print(f"Error: {e}")
@@ -246,6 +275,8 @@ def execute_search(OBJECT: str, vis_block: bool=VIS_BLOCK_DEFAULT, save_block: b
         head_node.destroy_node()
         joint_position_node.destroy_node()
         transform_node.destroy_node()
+        if servo_node is not None:
+            servo_node.destroy_node()
         rclpy.shutdown()
 
     return success

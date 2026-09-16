@@ -25,7 +25,7 @@ VIS_BLOCK = False
 config = Config()
 
 
-def get_distance_to_shelf(obj: str, index: int|None=None) -> tuple[float, np.ndarray, str, str]:
+def get_distance_to_shelf(obj: str, index: int|None=None) -> tuple[float, np.ndarray, np.ndarray, str, str]:
     """
     Calculate the distance to the shelf for the robot to capture the whole shelf.
     This function retrieves the furniture ID, name, centroid, and dimensions from the object JSON file
@@ -36,7 +36,11 @@ def get_distance_to_shelf(obj: str, index: int|None=None) -> tuple[float, np.nda
         index (int, optional): Location proposal index. Defaults to None.
 
     Returns:
-        tuple: Calculated distance to the shelf, centroid of the furniture, furniture name, and id.
+        tuple: Calculated distance to the shelf, centroid and dimensions of the furniture,
+        furniture name, and id.
+
+    Raises:
+        KeyError: if the furniture id is not in the scene graph
     """
     if index is None:
         # Get furniture id from graph json
@@ -53,7 +57,15 @@ def get_distance_to_shelf(obj: str, index: int|None=None) -> tuple[float, np.nda
         object_path = os.path.join(config.get_subpath("scene_graph"), config["pre_scanned_graphs"]["high_res"], "locations", f"{obj.replace(' ', '_')}.json")
         with open(object_path, "r") as file:
             object_data = json.load(file)
-        furniture_id = object_data["locations"][index]["furniture_id"]
+      
+        locations = object_data.get("locations") if isinstance(object_data, dict) else None
+        if not locations:
+            raise KeyError(f"No location proposals in {object_path} (contains {object_data!r}). "
+                           f"Delete the file and re-run so the proposals are regenerated.")
+        if index >= len(locations):
+            raise KeyError(f"Proposal {index} requested but {object_path} only holds "
+                           f"{len(locations)}.")
+        furniture_id = locations[index]["furniture_id"]
 
     # Get furniture name, centroid and dimensions from scene json
     scene_path = os.path.join(config.get_subpath("scene_graph"), config["pre_scanned_graphs"]["high_res"], "scene.json")
@@ -77,7 +89,7 @@ def get_distance_to_shelf(obj: str, index: int|None=None) -> tuple[float, np.nda
         circle_radius_width = (furniture_dimensions[0] -0.15) / (2 * math.tan(np.radians(H_FOV / 2)))
         circle_radius_height = (furniture_dimensions[2] - 0.15) / (2 * math.tan(np.radians(V_FOV / 2)))
     
-    return max(circle_radius_width, circle_radius_height), furniture_centroid, furniture_name, furniture_id
+    return max(circle_radius_width, circle_radius_height), furniture_centroid, furniture_dimensions, furniture_name, furniture_id
 
 
 def _front_normal_from_openness(
@@ -273,7 +285,7 @@ def plan_drawer_search(furniture_name: str, center: np.ndarray, drawer_center: P
         print("Drawer furniture not found!")
     return body_pose, front_normal
 
-def plan_furniture_search(obj: str, index: int|None=None) -> tuple[Pose3D, str, np.ndarray, Pose3D, str]:
+def plan_furniture_search(obj: str, index: int|None=None, match_tolerance: float=0.1, bbox_margin: float=0.1) -> tuple[Pose3D, str, np.ndarray, Pose3D, str]:
     """
     Plan the search for the object in front of the most likely furniture determined by Deepseek.
     This function retrieves the centroid and dimensions of the furniture from the object JSON file,
@@ -283,40 +295,68 @@ def plan_furniture_search(obj: str, index: int|None=None) -> tuple[Pose3D, str, 
     Args:
         obj (str): Object to search for.
         index (int, optional): Index of the furniture from the Deepseek result. Defaults to 0.
+        match_tolerance (float, optional): fallback test - how far the openmask3d mask centroid
+            may sit from the scene graph centroid and still count as the same furniture.
+            Defaults to 0.1 m.
+        bbox_margin (float, optional): how far outside the scene graph bounding box a mask
+            centroid may still fall. Defaults to 0.1 m.
 
     Returns:
-        tuple[Pose3D, str, np.ndarray, Pose3D]: The centroid of the furniture, the name of the furniture, 
+        tuple[Pose3D, str, np.ndarray, Pose3D]: The centroid of the furniture, the name of the furniture,
         the front normal of the furniture, the body pose in front of the furniture, and the furniture id.
+
+    Raises:
+        ValueError: if no openmask3d mask matches the furniture, so no approach can be planned
+        KeyError: if the furniture id is not in the scene graph
     """
     # Get necessary distance to shelf
-    radius, center, furniture_name, furniture_id = get_distance_to_shelf(obj, index)
-    # Get all cabinets/shelfs in the environment
+    radius, center, dimensions, furniture_name, furniture_id = get_distance_to_shelf(obj, index)
+    center = np.asarray(center)
+    dimensions = np.asarray(dimensions)
+    furnitures = "kitchen cabinet" if furniture_name == "cabinet" else furniture_name
+
+    bbox_min = center - dimensions / 2 - bbox_margin
+    bbox_max = center + dimensions / 2 + bbox_margin
+    matched = None
+    closest_distance = None
     for idx in range(0, 20):
-        if furniture_name == "cabinet":
-            furnitures = "kitchen cabinet"
-        else:
-            furnitures = furniture_name
         furniture_pcd, env_pcd, mask_sim = get_mask_points(furnitures, Config(), idx=idx, vis_block=VIS_BLOCK)
         furniture_center = np.mean(np.asarray(furniture_pcd.points), axis=0)
+        distance = float(np.linalg.norm(furniture_center - center))
+        if closest_distance is None or distance < closest_distance:
+            closest_distance = distance
         # Find correct furniture
-        if (np.allclose(furniture_center, center, atol=0.1)):
-            print(f"{furniture_name} found!")
-            # Get normal of furniture front face
-            front_normal = get_shelf_front_normal(furniture_pcd, furniture_name, env_pcd=env_pcd)
-            # Calculate body position in front of furniture
-            body_pose = body_planning_front(
-                env_pcd,
-                furniture_center,
-                furniture_normal=front_normal,
-                min_target_distance=radius,
-                max_target_distance=radius+0.2,
-                min_obstacle_distance=0.4,
-                n=5,
-                vis_block=VIS_BLOCK,
-            )
+        inside_bbox = bool(np.all(furniture_center >= bbox_min) and np.all(furniture_center <= bbox_max))
+        if inside_bbox or np.allclose(furniture_center, center, atol=match_tolerance):
+            print(f"{furniture_name} found! (mask {idx}, {distance:.2f} m from the scene graph "
+                  f"centroid, {'inside' if inside_bbox else 'near'} its bounding box)")
+            matched = (furniture_center, furniture_pcd, env_pcd)
             break
 
-        
+    if matched is None:
+        raise ValueError(
+            f"No openmask3d mask for '{furnitures}' matches furniture {furniture_id} "
+            f"('{furniture_name}') centred at {np.round(center, 2)} with dimensions "
+            f"{np.round(dimensions, 2)}. None of the 20 candidates fell inside its bounding box "
+            f"and the closest was {closest_distance:.2f} m away, beyond the {match_tolerance} m "
+            f"centroid tolerance."
+        )
+
+    furniture_center, furniture_pcd, env_pcd = matched
+    # Get normal of furniture front face
+    front_normal = get_shelf_front_normal(furniture_pcd, furniture_name, env_pcd=env_pcd)
+    # Calculate body position in front of furniture
+    body_pose = body_planning_front(
+        env_pcd,
+        furniture_center,
+        furniture_normal=front_normal,
+        min_target_distance=radius,
+        max_target_distance=radius+0.2,
+        min_obstacle_distance=0.4,
+        n=5,
+        vis_block=VIS_BLOCK,
+    )
+
     return Pose3D(furniture_center), furniture_name, front_normal, body_pose, furniture_id
 
 

@@ -103,7 +103,7 @@ ENV PIP_CONSTRAINT=/etc/pip-constraints.txt
 RUN apt-get update && apt-get install -y ros-humble-desktop ros-dev-tools rviz python3-pip
 
 # Install python dependencies
-RUN pip install open3d openai ikpy graphviz ultralytics apriltag git+https://github.com/openai/CLIP.git transformers hydra-core
+RUN pip install open3d openai ikpy graphviz ultralytics apriltag git+https://github.com/openai/CLIP.git "transformers==4.57.1" accelerate hydra-core
 
 # Install rmw_cyclonedds_cpp for better performance
 RUN apt-get update && apt-get install -y ros-humble-rmw-cyclonedds-cpp

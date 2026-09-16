@@ -1129,7 +1129,12 @@ def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, 
     print(f"Using drawer-handle IOA threshold: {ioa_threshold}")
     matches = drawer_handle_matches(predictions, ioa_threshold=ioa_threshold)
     filtered_matches = [m for m in matches if (m.handle is not None and m.drawer is not None)]
-    
+
+    unmatched_handles = [m.handle for m in matches if (m.handle is not None and m.drawer is None)]
+    if unmatched_handles:
+        print(f"Adding {len(unmatched_handles)} handle(s) without a drawer box as standalone candidates.")
+        filtered_matches = filtered_matches + [Match(h, h) for h in unmatched_handles]
+
     # Fallback: if IoA matching fails, pair the highest-confidence handle with nearest drawer center.
     if filtered_matches==[]:
         drawer_detections = [det for det in predictions if ("door" in det.name or "drawer" in det.name)]
@@ -1159,7 +1164,7 @@ def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, 
 
     # print("\nFiltered matches:", filtered_matches)
     if not filtered_matches:
-        print("No valid handle-drawer matches found.")
+        print("No handle or knob detected — returning None.")
         return None, None, None
 
     if target_pos is not None:
@@ -1177,9 +1182,10 @@ def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, 
             Project handle center pixel into world space and return the 3D Euclidean
             distance to target_pos.  Returns inf when depth is invalid.
             """
-            #find handle center pixel
-            hx = int((m.handle.bbox.xmin + m.handle.bbox.xmax) // 2)
-            hy = int((m.handle.bbox.ymin + m.handle.bbox.ymax) // 2)
+            #find handle center pixel, clamped to the image (SAM3 boxes can exceed it)
+            _h, _w = depth_img.shape[:2]
+            hx = int(np.clip((m.handle.bbox.xmin + m.handle.bbox.xmax) // 2, 0, _w - 1))
+            hy = int(np.clip((m.handle.bbox.ymin + m.handle.bbox.ymax) // 2, 0, _h - 1))
             #check depth value at handle center pixel, return large error if no valid depth
             d = depth_img[hy, hx] / 1000.0
             if d <= 0:
@@ -1191,11 +1197,16 @@ def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, 
             return float(np.linalg.norm(world[:3] - target_pos[:3]))
 
 
-        #print distances of all matches for debugging
-        # print("Match distances to target position:")
+        #print distances of all candidates for debugging
+        print("Candidate distances to target position:")
         for m in filtered_matches:
             dist = _handle_world_dist(m)
-            # print(f"  - handle bbox=({m.handle.bbox.xmin:.1f},{m.handle.bbox.ymin:.1f},{m.handle.bbox.xmax:.1f},{m.handle.bbox.ymax:.1f}) -> distance={dist:.3f}m")
+            print(
+                f"  - handle conf={float(m.handle.conf):.3f} "
+                f"bbox=({m.handle.bbox.xmin:.1f},{m.handle.bbox.ymin:.1f},{m.handle.bbox.xmax:.1f},{m.handle.bbox.ymax:.1f})"
+                f"{' [no drawer box]' if m.drawer is m.handle else ''} -> distance={dist:.3f}m"
+            )
+
     
         #pick the match with smallest 3D distance to the target drawer position
         best_match = min(filtered_matches, key=_handle_world_dist)
@@ -1203,7 +1214,7 @@ def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, 
         print(f"Target pos={target_pos} — selected handle 3D distance={dist_error:.3f}m")
 
         # Reject the best match if it is too far from the target position
-        MAX_POS_ERROR = 0.2
+        MAX_POS_ERROR = 0.20
         if dist_error > MAX_POS_ERROR:
             print(
                 f"[detect_drawer_handle_sam3] Best match 3D distance {dist_error:.3f}m exceeds "
@@ -1231,7 +1242,11 @@ def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, 
     # Drawer center + edges
     dxmin, dymin, dxmax, dymax = drawer_bbox
     x_drawer, y_drawer = (dxmin + dxmax) // 2, (dymin + dymax) // 2
-    
+
+    img_h, img_w = depth_img.shape[:2]
+    x_handle = int(np.clip(x_handle, 0, img_w - 1))
+    y_handle = int(np.clip(y_handle, 0, img_h - 1))
+
     print(f"Handle pixel: ({x_handle}, {y_handle}), Drawer pixel: ({x_drawer}, {y_drawer})")
     
     # Check if handle is in the left, right or center of the image
@@ -1246,6 +1261,8 @@ def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, 
         open_dir = "front"
         x_hinge = x_handle
     y_hinge = y_handle
+    x_hinge = int(np.clip(x_hinge, 0, img_w - 1))
+    y_hinge = int(np.clip(y_hinge, 0, img_h - 1))
     
     # Calculate 3D coordinates of the handle and the hinge in the map frame   
     camera_matrix = intrinsics_from_camera('/gripper_camera/color/camera_info')

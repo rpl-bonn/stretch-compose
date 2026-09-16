@@ -19,6 +19,7 @@ from stretch_package.stretch_state.frame_transformer import FrameTransformer
 from stretch_package.stretch_movement.move_to_pose import JointPoseController
 
 from utils.robot_utils.basic_movement import get_joint_states, set_gripper, spin_until_complete
+from utils.robot_utils.global_parameters import MAX_ARM_POS, MIN_ARM_POS
 from utils.importer import PointCloud, Vector3dVector 
 from utils.recursive_config import Config
 
@@ -253,6 +254,69 @@ def _handle_grasp_error_base(transform_node, handle_pose):
     spin_until_complete(transform_node)
     #return the error in base_link coordinates
     return h[:3] - T_base_grasp[:3, 3]
+
+
+ARM_SEGMENT_JOINTS = ['joint_arm_l0', 'joint_arm_l1', 'joint_arm_l2', 'joint_arm_l3']
+
+
+def get_arm_extension() -> float | None:
+    """
+    Read the arm's current total extension
+    """
+
+    joint_state = get_joint_states()
+    names = list(joint_state.name)
+    if 'wrist_extension' in names:
+        return float(joint_state.position[names.index('wrist_extension')])
+    if all(segment in names for segment in ARM_SEGMENT_JOINTS):
+        return float(sum(joint_state.position[names.index(s)] for s in ARM_SEGMENT_JOINTS))
+    print(f"[extension] /joint_states has neither wrist_extension nor {ARM_SEGMENT_JOINTS}: {names}")
+    return None
+
+
+def arm_extension_axis_base(transform_node) -> np.ndarray | None:
+    """
+    The direction in base_link, that extending the arm moves the gripper
+    """
+    
+    T_base_grasp = transform_node.get_tf_matrix("base_link", "link_grasp_center")
+    spin_until_complete(transform_node)
+    T_base_lift = transform_node.get_tf_matrix("base_link", "link_lift")
+    spin_until_complete(transform_node)
+    if T_base_grasp is None or T_base_lift is None:
+        print("[extension] could not look up link_lift -> link_grasp_center")
+        return None
+
+    axis = T_base_grasp[:3, 3] - T_base_lift[:3, 3]
+    axis[2] = 0.0
+    norm = float(np.linalg.norm(axis))
+    if norm < 0.05:
+        print("[extension] arm axis too short to give a direction")
+        return None
+    return axis / norm
+
+
+def extension_to_handle(transform_node, handle_pose, standoff: float = 0.0) -> float | None:
+    """
+    The wrist_extension that would put the gripper on the handle, from where the robot stands
+    """
+
+    err = _handle_grasp_error_base(transform_node, handle_pose)
+    if err is None:
+        print("[extension] no valid handle measurement to reach for")
+        return None
+    axis = arm_extension_axis_base(transform_node)
+    if axis is None:
+        return None
+    current = get_arm_extension()
+    if current is None:
+        return None
+
+    reach = float(np.dot(err, axis))
+    target = float(np.clip(current + reach - standoff, MIN_ARM_POS, MAX_ARM_POS))
+    print(f"[extension] handle is {reach*100:+.1f} cm along the arm axis, extension "
+          f"{current*100:.1f} -> {target*100:.1f} cm (standoff {standoff*100:.0f} cm)")
+    return target
 
 
 def correct_offsets_base_frame(transform_node, joint_pose_node, handle_pose):
