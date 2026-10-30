@@ -34,7 +34,10 @@ from stretch_package.stretch_visualizer import detection_visualizer
 from utils.sam3_detection_client import call_sam3, Sam3Client
 from utils.docker_communication import save_files
 from utils.files import prep_tmp_path
-
+from geometry_msgs.msg import PointStamped
+import rclpy
+import tf2_ros
+import tf2_geometry_msgs
 
 sys.path.append(os.path.abspath("/home/ws/source/sam2"))
 from sam2.build_sam import build_sam2 # type: ignore
@@ -117,6 +120,12 @@ def _init_sam2():
         sam2_predictor = SAM2ImagePredictor(build_sam2(_SAM2_MODEL_CFG, _SAM2_CHECKPOINT, device=_DEVICE.type))
 
 # Adaptable
+def _fmt_dets(dets) -> str:
+    """One line per SAM3 detection: name, confidence, box. Printing the messages whole dumps every mask pixel."""
+    return "".join(f"\n  - {d.name} conf={d.conf:.2f} bbox=({d.bbox.xmin:.0f},{d.bbox.ymin:.0f},"
+                   f"{d.bbox.xmax:.0f},{d.bbox.ymax:.0f})" for d in dets) or " none"
+
+
 VIS_BLOCK = False
 CLASSES = ["potted plant", "watering can", "herbs", "bottle", "pot", "pan", "cup", "plate", "bowl", "milk carton", "box", "stove", "oven",
            "football", "football plushy", "tennis ball", "image frame", "cat plushy", "shark plushy", "folder", "drawer", "door"]
@@ -882,7 +891,14 @@ def get_cloud_from_gripper_detection(tf_node: FrameTransformer, mask: np.ndarray
     return pcd
 
 
-def drawer_handle_matches(detections: list[Detection], ioa_threshold: float = 0.9) -> list[Match]:
+def _door_panel(mask):
+    """A door's mask grown by a few pixels, with the holes its handles may leave in it filled."""
+    from scipy.ndimage import binary_fill_holes
+
+    return binary_fill_holes(cv2.dilate(mask.astype(np.uint8), np.ones((5, 5), np.uint8)) > 0)
+
+
+def drawer_handle_matches(detections: list[Detection], ioa_threshold: float = 0.9, mask_of=None) -> list[Match]:
     """
     Match drawer and handle detections based on their bounding boxes and IOA (Intersection Over Area).
     This function takes a list of detections, filters out drawer and handle detections,
@@ -890,11 +906,16 @@ def drawer_handle_matches(detections: list[Detection], ioa_threshold: float = 0.
 
     Args:
         detections (list[Detection]): List of detections from the drawer detection model
+        mask_of: optional Detection -> binary mask (or None). With it, a handle goes to the door
+            whose mask holds the most of its pixels, the box overlap only deciding which doors it
+            may go to: neighbouring doors' boxes overlap round the handles between them, as on a
+            double door, where boxes alone can swap the handles
 
     Returns:
         list[Match]: List of matches between drawer and handle detections
     """
-    def matching_score(drawer: Detection, handle: Detection, ioa_weight: float = 10.0) -> tuple[float, float]:
+    def matching_score(drawer: Detection, handle: Detection, ioa_weight: float = 10.0,
+                       panel=None, handle_mask=None) -> tuple[float, float]:
         drawer_conf = drawer.conf
         drawer_bbox = drawer.bbox
         handle_bbox = handle.bbox
@@ -921,17 +942,22 @@ def drawer_handle_matches(detections: list[Detection], ioa_threshold: float = 0.
         ioa = intersection_area / handle_area
         if ioa == 0:
             return ioa, ioa
-        else:
-            score = ioa_weight * ioa + drawer_conf
-            return score, ioa
+        overlap = ioa
+        if panel is not None and handle_mask is not None and handle_mask.shape == panel.shape and handle_mask.any():
+            overlap = float((handle_mask & panel).sum() / handle_mask.sum())
+        return ioa_weight * overlap + drawer_conf, ioa
 
     drawer_detections = [det for det in detections if "door" in det.name or "drawer" in det.name]
     handle_detections = [det for det in detections if "handle" in det.name or "knob" in det.name]
     
+    masks = (lambda dets: [mask_of(d) for d in dets]) if mask_of else (lambda dets: [None] * len(dets))
+    panels = [None if m is None else _door_panel(m) for m in masks(drawer_detections)]
+    handle_masks = masks(handle_detections)
     matching_scores = np.zeros((len(drawer_detections), len(handle_detections), 2))
     for didx, drawer_detection in enumerate(drawer_detections):
         for hidx, handle_detection in enumerate(handle_detections):
-            matching_scores[didx, hidx] = np.array(matching_score(drawer_detection, handle_detection))
+            matching_scores[didx, hidx] = np.array(matching_score(drawer_detection, handle_detection,
+                                                                  panel=panels[didx], handle_mask=handle_masks[hidx]))
     drawer_idxs, handle_idxs = linear_sum_assignment(-matching_scores[..., 0])
     matches = [Match(drawer_detections[drawer_idx], handle_detections[handle_idx])
                for (drawer_idx, handle_idx) in zip(drawer_idxs, handle_idxs)
@@ -1023,7 +1049,8 @@ def detect_handle(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.
 
     return handle_pose_map, open_dir, hinge_pose_map
 
-def sam3_detect_object(obj: str, rgb_img: np.ndarray, conf: float=0.25, save_block: bool = False) -> tuple[bool, dict]:
+def sam3_detect_object(obj: str | list[str], rgb_img: np.ndarray, conf: float=0.25, save_block: bool = False) -> tuple[bool, dict]:
+    """The most confident detection of obj, or of any of a list of names for it, in rgb_img."""
     sam3_client = Sam3Client()
     tmp_path = prep_tmp_path(config)
     save_data = [("image.npy", np.save, rgb_img)]
@@ -1034,8 +1061,8 @@ def sam3_detect_object(obj: str, rgb_img: np.ndarray, conf: float=0.25, save_blo
         f"shape={getattr(rgb_img, 'shape', None)}, "
         f"dtype={getattr(rgb_img, 'dtype', None)}"
     )
-    predictions = call_sam3(sam3_client,rgb_img, [obj])
-    print("SAM3 predictions:", predictions)
+    predictions = call_sam3(sam3_client, rgb_img, [obj] if isinstance(obj, str) else list(obj))
+    print("SAM3 predictions:" + _fmt_dets(predictions))
     if predictions:
         best_pred = max(predictions, key=lambda p: float(p.conf))
         detection_dict = {
@@ -1080,7 +1107,7 @@ def detect_drawer_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, 
     )
     predictions = call_sam3(sam3_client,rgb_img, prompts)
     print("================== DRAWER HANDLE DETECTION ==================")
-    print("Drawer-door detections:", predictions)
+    print("Drawer-door detections:" + _fmt_dets(predictions))
 
     if predictions:
         print("Raw SAM3 detections:")
@@ -1399,7 +1426,7 @@ def detect_door_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rg
     image_path, *_ = save_files(save_data, tmp_path)
     predictions = call_sam3(sam3_client,rgb_img, prompts)
     print("================== DOOR HANDLE DETECTION ==================")
-    print("Drawer-door detections:", predictions)
+    print("Drawer-door detections:" + _fmt_dets(predictions))
     
     matches = drawer_handle_matches(predictions)
 
@@ -1539,49 +1566,450 @@ def detect_door_handle_sam3(tf_node: FrameTransformer, depth_img: np.ndarray, rg
     return handle_pose_map, open_dir, hinge_pose_map
 
 
-def detect_handle_simple(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.ndarray, prompts: list[str]) -> Pose3D | None:
+# A handle this many times longer one way than the other, in an upright image, is a bar,
+# horizontal or vertical; anything squarer is round (a knob)
+ELONGATED_HANDLE_ASPECT = 1.5
+
+
+def handle_shape(width, height):
+    """'horizontal', 'vertical' or 'round', from a handle's extent in an upright image."""
+    if width >= ELONGATED_HANDLE_ASPECT * height:
+        return 'horizontal'
+    if height >= ELONGATED_HANDLE_ASPECT * width:
+        return 'vertical'
+    return 'round'
+
+
+def mask_shape(mask):
     """
-    Close-range handle/knob detector for the gripper camera
+    A handle's shape from its mask, by its extent along its principal axes, so a bar seen at an
+    angle still counts as one; None for a mask of a few pixels.
+    """
+    ys, xs = np.nonzero(np.asarray(mask) > 0)
+    if len(xs) < 5:
+        return None
+    pts = np.stack([xs, ys], 1).astype(float)
+    evals, evecs = np.linalg.eigh(np.cov((pts - pts.mean(0)).T))
+    if np.sqrt(evals[1] / max(evals[0], 1e-9)) < ELONGATED_HANDLE_ASPECT:
+        return 'round'
+    return 'horizontal' if abs(evecs[0, 1]) >= abs(evecs[1, 1]) else 'vertical'
+
+
+def _box_shape(det):
+    bb = det.bbox
+    return handle_shape(float(bb.xmax - bb.xmin), float(bb.ymax - bb.ymin))
+
+
+def _cut_off(det, width, height, edge_px=2):
+    """Whether the detection's box touches the image's edge."""
+    bb = det.bbox
+    return bb.xmin <= edge_px or bb.ymin <= edge_px or bb.xmax >= width - 1 - edge_px or bb.ymax >= height - 1 - edge_px
+
+
+def _save_handle_selection(rgb_img, scored, chosen, expected_cam, camera_matrix,
+                           name="handle_selection.png"):
+    """
+    Save the gripper image with every handle detection, its distance from the expected handle
+    (m), the chosen one in green (none if all were too far), and a cross where the expected
+    handle is in the image, to see why a handle was or was not taken.
+    """
+    image = np.ascontiguousarray(rgb_img).copy()
+    for dist, det, _ in scored:
+        bb = det.bbox
+        colour = (0, 200, 0) if det is chosen else (0, 0, 255)
+        p0, p1 = (int(bb.xmin), int(bb.ymin)), (int(bb.xmax), int(bb.ymax))
+        cv2.rectangle(image, p0, p1, colour, 2)
+        cv2.putText(image, f"{_box_shape(det)} {det.conf:.2f} {dist:.2f}m", (p0[0], max(10, p0[1] - 3)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, colour, 1)
+    where = "behind the camera"
+    if expected_cam[2] > 0:
+        u = int(camera_matrix[0, 0] * expected_cam[0] / expected_cam[2] + camera_matrix[0, 2])
+        v = int(camera_matrix[1, 1] * expected_cam[1] / expected_cam[2] + camera_matrix[1, 2])
+        cv2.drawMarker(image, (u, v), (255, 255, 0), cv2.MARKER_CROSS, 20, 2)
+        h, w = image.shape[:2]
+        where = f"at pixel ({u}, {v}){'' if 0 <= u < w and 0 <= v < h else ', outside the image'}"
+    path = os.path.join(config.get_subpath("images"), name)
+    cv2.imwrite(path, image)
+    print(f"[simple-handle] expected handle {where}, {expected_cam[2]:.2f} m ahead; detections drawn in {path}")
+
+
+def detect_handle_simple(tf_node: FrameTransformer, depth_img: np.ndarray, rgb_img: np.ndarray, prompts: list[str],
+                         frame: str = "map", expected: np.ndarray | None = None,
+                         max_dist: float = 0.10, ambiguity_ratio: float | None = None,
+                         same_object_m: float = 0.03, same_handle_m: float = 0.06,
+                         drop_cut_off: bool = False, shape: str | None = None,
+                         neighbours=None) -> Pose3D | None:
+    """
+    Close-range handle/knob detector for the gripper camera. The pose is expressed in `frame`;
+    pass "base_link" when no map is running.
+
+    Without `expected` the most confident detection is taken. With it (a 3D point in `frame`),
+    every detection is projected to 3D and the one nearest to it is taken, so a neighbouring
+    door's or drawer's handle in view is not grasped by mistake; None if even the nearest is
+    more than max_dist away. With ambiguity_ratio set, also None unless the nearest is that many
+    times nearer than any other object (detections within same_object_m of it are the same one).
+    With drop_cut_off, a box touching the image's edge is never taken: it shows part of something
+    out of view, whose centre and depth there are not the object's. With shape ('horizontal',
+    'vertical' or 'round', see handle_shape), only handles of that shape are taken; the image
+    must be upright for it. With neighbours, the other handles' points in `frame` as expected
+    along with this one, the handle taken is the one that, shifted to, lines up the most of them
+    with detections (within same_handle_m), the nearest among those: the estimates may all be off
+    by as much as handles side by side are apart, as the two of a double door, but by the same.
     """
 
     sam3_client = Sam3Client()
     predictions = call_sam3(sam3_client, rgb_img, prompts)
     print("================== SIMPLE HANDLE DETECTION ==================")
-    print("Detections:", predictions)
+    print("Detections:" + _fmt_dets(predictions))
 
     handles = [d for d in predictions if "handle" in d.name or "knob" in d.name or "circle" in d.name]
     if not handles:
         print("[simple-handle] no handle/knob detected.")
         return None
 
-    # Only one knob is expected at close range; take the most confident
-    best = max(handles, key=lambda d: d.conf)
-    bb = best.bbox
-    x_px = int((bb.xmin + bb.xmax) // 2)
-    y_px = int((bb.ymin + bb.ymax) // 2)
-    print(f"[simple-handle] selected name={best.name} conf={best.conf:.2f} center=({x_px},{y_px})")
-
-    # Unproject the handle center pixel into the camera frame.
     camera_matrix = intrinsics_from_camera('/gripper_camera/color/camera_info')
     fx, fy = camera_matrix[0, 0], camera_matrix[1, 1]
     cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
-    z = robust_depth_m(depth_img, x_px, y_px)
-
-    if z <= 0:
-        print("[simple-handle] invalid depth at handle center.")
-        return None
-    x = (x_px - cx) * z / fx
-    y = (y_px - cy) * z / fy
-    handle_pose_gripper = np.array((x, y, z, 1.0))
-
-    # Transform into the map frame 
-    tf = tf_node.get_tf_matrix("map", "gripper_camera_color_optical_frame")
+    tf = tf_node.get_tf_matrix(frame, "gripper_camera_color_optical_frame")
     spin_until_complete(tf_node)
-    handle_pose_map = Pose3D((tf @ handle_pose_gripper)[:3])
-   
-    handle_pose_map.coords_cam = handle_pose_gripper[:3].copy()
-    print(f"[simple-handle] handle pose (map): {handle_pose_map}")
-    return handle_pose_map
+    h, w = depth_img.shape[:2]
+
+    def unproject(det):
+        """Handle centre in the camera frame and in `frame`, or None without valid depth."""
+        bb = det.bbox
+        x_px = int(np.clip((bb.xmin + bb.xmax) // 2, 0, w - 1))
+        y_px = int(np.clip((bb.ymin + bb.ymax) // 2, 0, h - 1))
+        z = robust_depth_m(depth_img, x_px, y_px)
+        if z <= 0:
+            return None
+        cam = np.array(((x_px - cx) * z / fx, (y_px - cy) * z / fy, z, 1.0))
+        return cam[:3], (tf @ cam)[:3]
+
+    if expected is None:
+        # Only one knob is expected at close range; take the most confident
+        whole = [d for d in handles if not (drop_cut_off and _cut_off(d, w, h))
+                 and (shape is None or _box_shape(d) == shape)]
+        if not whole:
+            print(f"[simple-handle] no whole {shape or ''} handle in view.")
+            return None
+        best = max(whole, key=lambda d: d.conf)
+        point = unproject(best)
+        if point is None:
+            print("[simple-handle] invalid depth at handle center.")
+            return None
+    else:
+        expected = np.asarray(expected, dtype=float)[:3]
+        scored = []
+        for det in handles:
+            point = unproject(det)
+            dist = np.inf if point is None else float(np.linalg.norm(point[1] - expected))
+            if (drop_cut_off and _cut_off(det, w, h)) or (shape is not None and _box_shape(det) != shape):
+                dist = np.inf
+            scored.append((dist, det, point))
+        neighbours = [np.asarray(n, dtype=float)[:3] for n in (neighbours or [])]
+        seen = [p[1] for _, _, p in scored if p is not None]
+
+        def lined_up(dist, point):
+            # Other handles landing on a detection with everything shifted as this one is
+            if not np.isfinite(dist):
+                return 0
+            shift = point[1] - expected
+            return sum(any(np.linalg.norm(n + shift - s) < same_handle_m for s in seen) for n in neighbours)
+
+        support = [lined_up(d, p) for d, _, p in scored]
+        for (d, det, _), k in zip(scored, support):
+            print(f"  - {det.name} conf={det.conf:.2f} {_box_shape(det)} -> {d:.3f} m from the expected handle"
+                  + (f", {k} of {len(neighbours)} other handles line up" if neighbours else ""))
+        i = min(range(len(scored)), key=lambda i: (-support[i], scored[i][0]))
+        dist, best, point = scored[i]
+        _save_handle_selection(rgb_img, scored, best if dist <= max_dist and np.isfinite(dist) else None,
+                               np.linalg.inv(tf) @ np.append(expected, 1.0), camera_matrix)
+        if not np.isfinite(dist):
+            print(f"[simple-handle] no whole {shape or ''} handle with depth in view.")
+            return None
+        if dist > max_dist:
+            print(f"[simple-handle] nearest handle is {dist:.3f} m from the expected one (> {max_dist:.2f}); "
+                  f"not the selected handle.")
+            return None
+        others = [d for d, _, p in scored if p is not None and np.linalg.norm(p[1] - point[1]) > same_object_m]
+        # if ambiguity_ratio is not None and others and dist > ambiguity_ratio * min(others):
+        #     print(f"[simple-handle] nearest handle {dist:.3f} m and another {min(others):.3f} m from the expected "
+        #           f"one; too close to tell which is the selected handle.")
+            # return None
+
+    print(f"[simple-handle] selected name={best.name} conf={best.conf:.2f}")
+    handle_pose = Pose3D(point[1])
+    handle_pose.coords_cam = point[0].copy()
+    # Its size, width and height in metres, over the boxes of every detection of it: each prompt
+    # may box only part of a bar handle
+    same = [det for det in handles
+            if (p := unproject(det)) is not None and np.linalg.norm(p[1] - point[1]) < same_handle_m]
+    x0, y0 = min(d.bbox.xmin for d in same), min(d.bbox.ymin for d in same)
+    x1, y1 = max(d.bbox.xmax for d in same), max(d.bbox.ymax for d in same)
+    z = float(point[0][2])
+    handle_pose.size_m = (float(x1 - x0) * z / fx, float(y1 - y0) * z / fy)
+    print(f"[simple-handle] handle {100 * handle_pose.size_m[0]:.1f} x {100 * handle_pose.size_m[1]:.1f} cm (w x h)")
+    print(f"[simple-handle] handle pose ({frame}): {handle_pose}")
+    return handle_pose
+
+
+def detect_compartments_from_head(rgb_img, depth_img, tf_node):
+    """
+    1. Runs SAM 3 on head camera view with open prompts.
+    2. Extracts binary masks for handle and container via CvBridge.
+    3. Calculates exact handle centroid & drawer bounds using mask pixels.
+    """
+    
+    prompts = ["cabinet door", "drawer", "handle", "knob"]
+    sam3_client = Sam3Client()
+    predictions = call_sam3(sam3_client, rgb_img, prompts)
+    print(f"[detect_compartments] Received {len(predictions)} predictions from SAM3")
+    for det in predictions:
+        print(f"  - name={det.name} conf={det.conf:.3f} bbox=({det.bbox.xmin:.1f},{det.bbox.ymin:.1f},{det.bbox.xmax:.1f},{det.bbox.ymax:.1f})")
+    def mask_of(det):
+        mask = getattr(det, 'mask', None)
+        if mask is None or len(mask.data) == 0:
+            return None
+        return sam3_client.bridge.imgmsg_to_cv2(mask, desired_encoding="mono8") > 0
+
+    matches = drawer_handle_matches(predictions, ioa_threshold=0.9, mask_of=mask_of)
+    print(f"[detect_compartments] drawer_handle_matches returned {len(matches)} matches")
+    centre_x = lambda d: None if d is None else int((d.bbox.xmin + d.bbox.xmax) / 2)
+    for m in matches:
+        print(f"  - drawer={getattr(m.drawer, 'name', None)} (x {centre_x(m.drawer)}) "
+              f"handle={getattr(m.handle, 'name', None)} (x {centre_x(m.handle)})")
+
+    T_base_cam = tf_node.get_tf_matrix("base_link", "camera_color_optical_frame")
+    candidates = []
+    for match in matches:
+        if not match.handle or not match.drawer:
+            continue
+
+        hbbox = match.handle.bbox
+        dbbox = match.drawer.bbox
+
+        # -------------------------------------------------------------
+        # Extract binary masks via CvBridge
+        # -------------------------------------------------------------
+        handle_mask = None
+        if hasattr(match.handle, 'mask') and len(match.handle.mask.data) > 0:
+            handle_mask = sam3_client.bridge.imgmsg_to_cv2(
+                match.handle.mask, desired_encoding="mono8"
+            )
+
+        drawer_mask = None
+        if hasattr(match.drawer, 'mask') and len(match.drawer.mask.data) > 0:
+            drawer_mask = sam3_client.bridge.imgmsg_to_cv2(
+                match.drawer.mask, desired_encoding="mono8"
+            )
+
+        # -------------------------------------------------------------
+        # 1. Classification (door vs drawer)
+        # -------------------------------------------------------------
+        drawer_name = match.drawer.name.lower()
+        classification = 'drawer' if 'drawer' in drawer_name else 'door'
+
+        # -------------------------------------------------------------
+        # 2. Handle Center & Orientation from Mask
+        # -------------------------------------------------------------
+        if handle_mask is not None and np.any(handle_mask > 0):
+            ys, xs = np.where(handle_mask > 0)
+            x_handle = int(np.mean(xs))
+            y_handle = int(np.mean(ys))
+
+            w_h = int(np.max(xs) - np.min(xs))
+            h_h = int(np.max(ys) - np.min(ys))
+            handle_orientation = "horizontal" if w_h > h_h else "vertical"
+        else:
+            # Fallback to BBox if mask is empty
+            x_handle = int((hbbox.xmin + hbbox.xmax) // 2)
+            y_handle = int((hbbox.ymin + hbbox.ymax) // 2)
+            w_h = hbbox.xmax - hbbox.xmin
+            h_h = hbbox.ymax - hbbox.ymin
+            handle_orientation = "horizontal" if w_h > h_h else "vertical"
+
+        # -------------------------------------------------------------
+        # 3. Door/Drawer Bounds from Mask
+        # -------------------------------------------------------------
+        if drawer_mask is not None and np.any(drawer_mask > 0):
+            dys, dxs = np.where(drawer_mask > 0)
+            dxmin, dxmax = int(np.min(dxs)), int(np.max(dxs))
+        else:
+            dxmin, dxmax = int(dbbox.xmin), int(dbbox.xmax)
+
+        left_vs_right = "right" if abs(x_handle - dxmin) < abs(x_handle - dxmax) else "left"
+        if classification == 'drawer':
+            left_vs_right = None
+
+        # If drawer detected as door, check if the handle sits in the middle of the door (i.e., not near either edge), then reclassify as a drawer.
+        if classification == 'door':
+            if min(x_handle - dxmin, dxmax - x_handle) > 0.4 * (dxmax - dxmin):
+                classification = 'drawer'
+                left_vs_right = None
+
+        # -------------------------------------------------------------
+        # 4. Project handle center to base_link
+        # -------------------------------------------------------------
+        handle_3d_base = project_pixel_to_base(x_handle, y_handle, depth_img, tf_node)
+        print(f"Handle pixel=({x_handle},{y_handle}) -> 3D base_link={handle_3d_base}")
+        if handle_3d_base is None:
+            continue
+
+        # -------------------------------------------------------------
+        # 5. Front plane: its normal orients the handle frame, and the hinge is where the
+        #    hinge-edge pixel's viewing ray meets it (the depth right at the edge is unreliable)
+        # -------------------------------------------------------------
+        plane = fit_front_plane(drawer_mask, depth_img, T_base_cam) if drawer_mask is not None else None
+        if plane is not None:
+            centroid, normal = plane
+            front_normal_base = normal[:2] / np.linalg.norm(normal[:2])
+            print(f"Front plane normal (base_link, towards robot): {np.round(normal, 3)}, "
+                  f"yaw off square {np.degrees(np.arctan2(front_normal_base[1], -front_normal_base[0])):+.1f} deg")
+        else:
+            front_normal_base = np.array([-1.0, 0.0])
+            print("Front plane fit failed; assuming the robot faces the front squarely.")
+
+        hinge_3d_base, radius = None, None
+        if classification == 'door':
+            x_hinge_px = dxmin if left_vs_right == "left" else dxmax
+            if plane is not None:
+                origin, ray = head_pixel_rays_base(np.array([x_hinge_px]), np.array([y_handle]),
+                                                   depth_img.shape, T_base_cam)
+                denom = float(normal @ ray[0])
+                if abs(denom) > 1e-6:
+                    hinge_3d_base = origin + ray[0] * float(normal @ (centroid - origin)) / denom
+            if hinge_3d_base is None:
+                hinge_3d_base = project_pixel_to_base(x_hinge_px, y_handle, depth_img, tf_node)
+            if hinge_3d_base is None:
+                continue
+            # Along the front, so the handle sticking out of the door does not add to the radius
+            tangent = np.array([-front_normal_base[1], front_normal_base[0]])
+            radius = float(abs((handle_3d_base[:2] - hinge_3d_base[:2]) @ tangent))
+            print(f"Hinge pixel=({x_hinge_px},{y_handle}) -> 3D base_link={hinge_3d_base}, radius={radius:.3f} m")
+
+        candidates.append({
+            'classification': classification,
+            'left_vs_right': left_vs_right,
+            'handle_orientation': handle_orientation,
+            'handle_3d_base': handle_3d_base,
+            'radius': radius,
+            'hinge_3d_base': hinge_3d_base,
+            'front_normal_base': front_normal_base,
+            'front_measured': plane is not None,
+            'drawer_bbox': dbbox,
+            'handle_bbox': hbbox,
+            'drawer_mask': drawer_mask,
+            'handle_mask': handle_mask,
+            'handle_pixel': (x_handle, y_handle)
+        })
+
+    return candidates
+
+
+
+def project_pixel_to_base(x_px, y_px, depth_img, tf_node):
+    """
+    Projects a pixel (x_px, y_px) of the rotated (portrait) head image into base_link.
+
+    The head images are rotated 90 deg clockwise relative to the sensor (portrait
+    720x1280 vs. sensor 1280x720), while the intrinsics and
+    camera_color_optical_frame refer to the unrotated sensor. Depth is read at the
+    rotated pixel, which is then mapped back to sensor coordinates.
+    """
+    camera_matrix = intrinsics_from_camera('/camera/color/camera_info')
+    fx, fy = camera_matrix[0, 0], camera_matrix[1, 1]
+    cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
+
+    x_px, y_px = int(x_px), int(y_px)
+    z = robust_depth_m(depth_img, x_px, y_px)
+    if z <= 0:
+        return None
+
+    # Rotated (u, v) -> sensor (v, H_sensor - 1 - u), H_sensor = rotated image width
+    sensor_h = depth_img.shape[1]
+    u_sensor = y_px
+    v_sensor = sensor_h - 1 - x_px
+
+    x = (u_sensor - cx) * z / fx
+    y = (v_sensor - cy) * z / fy
+    point_cam = np.array([x, y, z, 1.0])
+
+    try:
+        T_base_cam = tf_node.get_tf_matrix("base_link", "camera_color_optical_frame")
+    except Exception as e:
+        print(f"TF lookup failed: {e}")
+        return None
+
+    point_base = (T_base_cam @ point_cam)[:3]
+    print(f"Pixel ({x_px},{y_px}) with depth {z:.3f}m -> base_link: {point_base}")
+    return point_base
+
+def head_pixel_rays_base(xs, ys, depth_shape, T_base_cam):
+    """
+    Viewing rays in base_link for pixels of the rotated (portrait) head image, as in
+    project_pixel_to_base. Returns the camera origin and one direction per pixel, scaled so
+    that origin + direction * depth_m is the 3D point.
+    """
+    camera_matrix = intrinsics_from_camera('/camera/color/camera_info')
+    fx, fy = camera_matrix[0, 0], camera_matrix[1, 1]
+    cx, cy = camera_matrix[0, 2], camera_matrix[1, 2]
+
+    u_sensor = np.asarray(ys, dtype=float)
+    v_sensor = depth_shape[1] - 1 - np.asarray(xs, dtype=float)
+    rays_cam = np.stack([(u_sensor - cx) / fx, (v_sensor - cy) / fy, np.ones_like(u_sensor)], axis=1)
+    return T_base_cam[:3, 3], rays_cam @ T_base_cam[:3, :3].T
+
+
+def fit_front_plane(mask, depth_img, T_base_cam, inlier_m=0.01, iterations=200, erode_px=15,
+                    max_tilt=0.25, max_yaw_deg=60.0):
+    """
+    RANSAC plane through the depth points of a door / drawer mask, in base_link.
+    The mask is eroded first so the gaps and frame around the front do not pull the fit.
+
+    Returns (centroid, unit normal pointing back at the robot), or None if there are too few
+    points or the plane is not a plausible vertical front facing the robot.
+    """
+    inner = cv2.erode((mask > 0).astype(np.uint8), np.ones((erode_px, erode_px), np.uint8))
+    ys, xs = np.nonzero(inner)
+    depth = depth_img[..., 0] if depth_img.ndim == 3 else depth_img
+    z = depth[ys, xs].astype(float) / 1000.0
+    valid = z > 0
+    ys, xs, z = ys[valid], xs[valid], z[valid]
+    if z.size < 100:
+        print(f"[front-plane] only {z.size} valid depth points under the mask")
+        return None
+
+    rng = np.random.default_rng(0)
+    keep = rng.choice(z.size, min(z.size, 3000), replace=False)
+    # Depth noise grows with the square of the distance: about 2 cm at 2 m for the head camera
+    inlier_m = max(inlier_m, 0.005 * float(np.median(z)) ** 2)
+    origin, rays = head_pixel_rays_base(xs[keep], ys[keep], depth_img.shape, T_base_cam)
+    pts = origin + rays * z[keep, None]
+
+    best = None
+    for _ in range(iterations):
+        a, b, c = pts[rng.choice(len(pts), 3, replace=False)]
+        n = np.cross(b - a, c - a)
+        if np.linalg.norm(n) < 1e-9:
+            continue
+        n /= np.linalg.norm(n)
+        inliers = np.abs((pts - a) @ n) < inlier_m
+        if best is None or inliers.sum() > best.sum():
+            best = inliers
+    if best is None or best.sum() < 0.5 * len(pts):
+        print(f"[front-plane] no dominant plane ({0 if best is None else best.sum()}/{len(pts)} inliers)")
+        return None
+
+    centroid = pts[best].mean(axis=0)
+    normal = np.linalg.svd(pts[best] - centroid)[2][-1]
+    if normal @ (origin - centroid) < 0:
+        normal = -normal
+    # The cabinet is ahead along +x, so a front facing the robot has its normal along -x.
+    yaw_off = np.degrees(np.arctan2(abs(normal[1]), -normal[0]))
+    if abs(normal[2]) > max_tilt or yaw_off > max_yaw_deg:
+        print(f"[front-plane] implausible front normal {np.round(normal, 3)}")
+        return None
+    return centroid, normal
 
 
 def test_prints(matches, rgb_img, save_path="handle_door_match_current.png"):
