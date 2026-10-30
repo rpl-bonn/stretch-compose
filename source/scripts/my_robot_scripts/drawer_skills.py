@@ -6,9 +6,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from scripts.my_robot_scripts import searchnet_planning
-from scripts.my_robot_scripts.robot_session import Robot
-from scripts.my_robot_scripts.test_visual_servo import servo_grasp_object
+from utils.robot_utils import searchnet_planning
+from utils.robot_utils.robot_session import Robot
+from utils.robot_utils.run_visual_servo import servo_grasp_object
 from stretch_package.stretch_images.aligned_depth2color_subscriber import AlignedDepth2ColorSubscriber
 from stretch_package.stretch_images.rgb_image_subscriber import RGBImageSubscriber
 from utils.coordinates import Pose3D

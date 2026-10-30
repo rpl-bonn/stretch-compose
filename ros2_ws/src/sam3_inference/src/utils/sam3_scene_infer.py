@@ -3,7 +3,7 @@ import cv2
 import torch
 from PIL import Image
 import matplotlib
-matplotlib.use("Agg") 
+matplotlib.use("Agg")  # headless: save figures to file, no display needed
 import matplotlib.pyplot as plt
 
 import sam3
@@ -27,17 +27,18 @@ class BBox:
         return (BBox, (self.xmin, self.ymin, self.xmax, self.ymax))
 
 class Detection:
-    def __init__(self, name, conf, bbox: BBox, file: str):
+    def __init__(self, name, conf, bbox: BBox, file: str, mask=None):
         self.file = file
         self.name = name
         self.conf = float(conf)
         self.bbox = bbox
+        self.mask = mask
 
     def __repr__(self):
         return (f"Detection(file='{self.file}', name='{self.name}', conf={self.conf}, bbox={self.bbox})")
     
     def __reduce__(self):
-        return (Detection, (self.file, self.name, self.conf, self.bbox))
+        return (Detection, (self.name, self.conf, self.bbox, self.file, self.mask))
 
 class Sam3SceneInference:
 
@@ -106,7 +107,8 @@ class Sam3SceneInference:
                     text_prompt,
                     result["boxes"],
                     result["scores"],
-                    file
+                    file,
+                    result["masks"]
                 )
 
                 if visualize:
@@ -115,12 +117,13 @@ class Sam3SceneInference:
         return all_detections
 
 
-    def _convert_to_detection_format(self, name, boxes, scores, file):
+    def _convert_to_detection_format(self, name, boxes, scores, file, masks):
         detections = []
 
         for i in range(len(boxes)):
             bbox = boxes[i]
             conf = scores[i]
+            mask = masks[i].squeeze().to(torch.uint8).cpu().numpy() * 255
 
             detection = Detection(
                 file=file,
@@ -131,7 +134,8 @@ class Sam3SceneInference:
                     bbox[1].item(),
                     bbox[2].item(),
                     bbox[3].item()
-                )
+                ),
+                mask=mask
             )
 
             detections.append(detection)

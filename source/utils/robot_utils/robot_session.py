@@ -65,6 +65,10 @@ class Robot:
     def switch_to_navigation_mode(self) -> bool:
         return self.mode.switch_to_navigation_mode()
 
+    def look_front(self) -> None:
+        #move head camera to 0 position using send_joint_pose
+        self.pose.send_joint_pose({'head_tilt': 0.0, 'head_pan': 0.0})
+
 
 @contextmanager
 def robot_session(node_name: str = 'transform_manager_node'):

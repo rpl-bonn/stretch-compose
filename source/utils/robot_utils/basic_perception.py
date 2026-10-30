@@ -278,22 +278,21 @@ def arm_extension_axis_base(transform_node) -> np.ndarray | None:
     """
     The direction in base_link, that extending the arm moves the gripper
     """
-    
-    T_base_grasp = transform_node.get_tf_matrix("base_link", "link_grasp_center")
-    spin_until_complete(transform_node)
-    T_base_lift = transform_node.get_tf_matrix("base_link", "link_lift")
-    spin_until_complete(transform_node)
-    if T_base_grasp is None or T_base_lift is None:
-        print("[extension] could not look up link_lift -> link_grasp_center")
+
+    T_base_arm = transform_node.get_tf_matrix("base_link", "link_arm_l0")
+    spin_until_complete(transform_node)         
+    if T_base_arm is None:
+        print("[extension] could not look up base_link -> link_arm_l0")
         return None
 
-    axis = T_base_grasp[:3, 3] - T_base_lift[:3, 3]
+    axis = T_base_arm[:3, 2].copy()             
     axis[2] = 0.0
     norm = float(np.linalg.norm(axis))
-    if norm < 0.05:
-        print("[extension] arm axis too short to give a direction")
+    if norm < 0.05:                              
         return None
     return axis / norm
+
+   
 
 
 def extension_to_handle(transform_node, handle_pose, standoff: float = 0.0) -> float | None:
@@ -401,11 +400,7 @@ def visualize_correction(transform_node, joint_pose_node, handle_pose, IMG_DIR):
         return u, v
 
     # Handle in the camera frame
-    tf_cam_from_map = transform_node.get_tf_matrix(
-        "gripper_camera_color_optical_frame", "map"
-    )
-    spin_until_complete(transform_node)
-    handle_in_cam = (tf_cam_from_map @ np.array([*handle_pose.coordinates, 1.0]))[:3]
+    handle_in_cam = np.asarray(handle_pose.coords_cam, dtype=float)
 
     # Grasp center in the camera frame 
     tf_cam_from_base = transform_node.get_tf_matrix(
@@ -445,3 +440,43 @@ def visualize_correction(transform_node, joint_pose_node, handle_pose, IMG_DIR):
           f"x={error_in_base[0]*100:+.1f} cm (translate_mobile_base)  "
           f"y={error_in_base[1]*100:+.1f} cm (extension axis)  "
           f"z={error_in_base[2]*100:+.1f} cm (joint_lift)")
+
+def panel_plane(points, viewpoint, iterations=200, max_points=3000, inlier_m=0.008, min_points=200,
+                max_tilt=np.radians(20.0), warn_tilt=np.radians(5.0)):
+    """
+    The dominant vertical plane through 3-D points (RANSAC, then least squares) as an (x, y)
+    point on it and its unit (x, y) normal facing viewpoint; None if there is none.
+    """
+    pts = np.asarray(points, dtype=float)
+    if len(pts) < min_points:
+        print(f"[panel] only {len(pts)} points")
+        return None
+    rng = np.random.default_rng(0)
+    pts = pts[rng.choice(len(pts), min(len(pts), max_points), replace=False)]
+    best = None
+    for _ in range(iterations):
+        a, b, c = pts[rng.choice(len(pts), 3, replace=False)]
+        n = np.cross(b - a, c - a)
+        if np.linalg.norm(n) < 1e-9:
+            continue
+        inliers = np.abs((pts - a) @ (n / np.linalg.norm(n))) < inlier_m
+        if best is None or inliers.sum() > best.sum():
+            best = inliers
+    if best is None or best.sum() < 0.5 * len(pts):
+        print(f"[panel] no dominant plane: {0 if best is None else int(best.sum())} of {len(pts)} points within "
+              f"{inlier_m * 1000:.0f} mm")
+        return None
+    centroid = pts[best].mean(axis=0)
+    normal = np.linalg.svd(pts[best] - centroid)[2][-1]
+    if normal @ (np.asarray(viewpoint, dtype=float)[:3] - centroid) < 0:
+        normal = -normal
+    # A tilted plane in front of a vertical door means the gripper camera's URDF pitch is off
+    tilt = float(np.degrees(np.arcsin(np.clip(normal[2], -1.0, 1.0))))
+    if abs(normal[2]) > np.sin(warn_tilt):
+        print(f"[panel] plane tilted {abs(tilt):.0f} deg from vertical, its top leaning "
+              f"{'away from' if tilt > 0 else 'towards'} the camera: a vertical door seen like this means the "
+              f"gripper camera's pitch in the robot's URDF is off by about that much")
+    if abs(normal[2]) > np.sin(max_tilt):
+        return None
+    n = normal[:2] / np.linalg.norm(normal[:2])
+    return centroid[:2], (n if n @ (np.asarray(viewpoint)[:2] - centroid[:2]) > 0 else -n)

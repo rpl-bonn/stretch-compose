@@ -9,7 +9,7 @@ import tf2_ros
 from threading import Thread
 import traceback
 
-from scripts.my_robot_scripts import searchnet_planning
+from utils.robot_utils import searchnet_planning
 from stretch_package.stretch_images.aligned_depth2color_subscriber import AlignedDepth2ColorSubscriber
 from stretch_package.stretch_images.rgb_image_subscriber import RGBImageSubscriber
 from stretch_package.stretch_movement.move_body import BaseController

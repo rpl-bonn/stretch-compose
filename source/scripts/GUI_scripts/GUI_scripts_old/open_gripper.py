@@ -31,7 +31,7 @@ from utils.importer import PointCloud
 from utils.point_clouds import icp
 from utils.recursive_config import Config
 from utils.time import convert_time
-from scripts.my_robot_scripts.graspnet_testing import visualize_grasps
+from scripts.robot_demo_scripts.graspnet_testing import visualize_grasps
 from stretch_package.stretch_movement.move_body import BaseController
 from stretch_package.stretch_movement.move_to_pose import JointPoseController
 from stretch_package.stretch_movement.move_to_position import JointPositionController

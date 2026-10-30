@@ -29,7 +29,7 @@ from utils.robot_utils.basic_movement import set_gripper, spin_until_complete
 from utils.robot_utils.basic_perception import get_depth_picture, get_rgb_picture
 from utils.zero_shot_object_detection_sam3 import sam3_detect_object
 
-OBJECT = "tennis ball"  
+OBJECT = "water bottle"  
 GRIPPER_CAMERA_FRAME = "gripper_camera_color_optical_frame"
 
 # Arm pose that puts the gripper camera in front of the object with both finger markers in
@@ -164,20 +164,25 @@ def run_gpd_grasp(args, servo_node, pose_node, position_node, transform_node):
 
 
 def run_servo_only(servo_node, pose_node, object_name=OBJECT, timeout_s=30.0, grasp=True,
-                   dry_run=False, flat=False, width=OBJECT_WIDTH_M, return_to_ready=False):
+                   dry_run=False, flat=False, width=OBJECT_WIDTH_M, return_to_ready=False,
+                   return_verification=False, detector=sam3_box_detector):
     """
     Servo straight onto the object, with no grasp planning.
 
     Args:
         servo_node (VisualServoController): the loop under test
         pose_node (JointPoseController): gripper commands
-        object_name (str): SAM3 text prompt
+        object_name (str | list[str]): SAM3 text prompt, or several names for the object
         timeout_s (float): servo timeout
         grasp (bool): close the gripper afterwards and verify the grasp
         dry_run (bool): perceive and log only, never move
         flat (bool): object lies flat, aim at the visible surface instead of an assumed centre
         width (float): object width in meters, sizes the grasp confirmation window
         return_to_ready (bool): send the arm back to READY_POSE once the object is held
+        return_verification (bool): return the GraspVerification (aperture, effort, reason)
+            rather than whether it confirmed the grasp
+        detector (Callable): (object_name, image) -> target box (xmin, ymin, xmax, ymax) or
+            None; the most confident SAM3 detection by default
 
     Returns:
         bool: whether the grasp was confirmed, or whether servoing converged if grasp is off
@@ -185,7 +190,7 @@ def run_servo_only(servo_node, pose_node, object_name=OBJECT, timeout_s=30.0, gr
     print(f"Servoing to '{object_name}'{' (dry run)' if dry_run else ''}...")
     result = servo_node.servo_to_object(
         object_name,
-        sam3_box_detector,
+        detector,
         timeout_s=timeout_s,
         push_to_center=not flat,
         dry_run=dry_run,
@@ -205,7 +210,7 @@ def run_servo_only(servo_node, pose_node, object_name=OBJECT, timeout_s=30.0, gr
     if return_to_ready:
         pose_node.send_joint_pose(READY_POSE)
         spin_until_complete(pose_node)
-    return verification.grasped
+    return verification if return_verification else verification.grasped
 
 
 def servo_grasp_object(object_name=OBJECT, pose_node=None, velocity_scale=0.6,
@@ -219,13 +224,13 @@ def servo_grasp_object(object_name=OBJECT, pose_node=None, velocity_scale=0.6,
     itself with spin_once, so it must not be added to the caller's executor.
 
     Args:
-        object_name (str): SAM3 text prompt
+        object_name (str | list[str]): SAM3 text prompt, or several names for the object
         pose_node (JointPoseController): the caller's pose node; one is created if omitted
         velocity_scale (float): overall velocity scale for the servo loop
         switch_mode (bool): switch the driver to position mode first. Skip it if the caller
             already did, since the switch interrupts whatever the arm is doing.
         **kwargs: forwarded to run_servo_only (timeout_s, grasp, flat, width, dry_run,
-            return_to_ready)
+            return_to_ready, return_verification, detector)
 
     Returns:
         bool: whether the object ended up held

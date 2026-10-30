@@ -6,7 +6,7 @@ from rclpy.node import Node
 from threading import Thread
 import tf2_ros
 
-from scripts.my_robot_scripts import graspnet_planning
+from utils.robot_utils import graspnet_planning
 from stretch_package.stretch_images.compressed_image_subscriber import CompressedImageSubscriber
 from stretch_package.stretch_movement.move_body import BaseController
 from stretch_package.stretch_movement.move_head import HeadJointController

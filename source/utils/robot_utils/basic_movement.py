@@ -27,6 +27,13 @@ try:
 except Exception:
     NAV_BACKEND = "funmap"
 
+# Odometry source. rtabmap publishes the ICP-corrected estimate on /icp_odom;
+# /odom is the raw wheel odometry, which drifts away from it.
+try:
+    ODOM_TOPIC = Config()["navigation"]["odom_topic"]
+except Exception:
+    ODOM_TOPIC = "/icp_odom"
+
 _NAV_ACTION_NAMES = {"funmap": "/move_base", "nav2": "navigate_to_pose"}
 
 _move_body_mod.DEFAULT_NAV_ACTION = _NAV_ACTION_NAMES.get(NAV_BACKEND, "/move_base")
@@ -44,14 +51,20 @@ def spin_until_complete(node: Node) -> None:
     node.done = False
 
 
-def get_odom() -> Odometry:
+def get_odom(topic: str | None = None) -> Odometry:
     """
     Returns the robot's current odometry.
-    
+
+    Note: the pose is expressed in the odometry frame of `topic` (e.g. `icp_odom`),
+    NOT in `map`. Use FrameTransformer("map", "base_link") for map-frame poses.
+
+    Args:
+        topic (str | None): Odometry topic to read from. Defaults to ODOM_TOPIC.
+
     Returns:
         Odometry: The current odometry of the robot.
     """
-    odom_node = OdomSubscriber()
+    odom_node = OdomSubscriber(topic or ODOM_TOPIC)
     spin_until_complete(odom_node)
     odom = odom_node.odom
     odom_node.destroy_node()

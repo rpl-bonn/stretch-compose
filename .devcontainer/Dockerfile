@@ -99,20 +99,26 @@ RUN apt-get update && apt-get install -y \
 # Pin numpy across ALL pip installs
 COPY .devcontainer/constraints.txt /etc/pip-constraints.txt
 ENV PIP_CONSTRAINT=/etc/pip-constraints.txt
+ENV PIP_NO_CACHE_DIR=1
 
 RUN apt-get update && apt-get install -y ros-humble-desktop ros-dev-tools rviz python3-pip
 
 # Install python dependencies
-RUN pip install open3d openai ikpy graphviz ultralytics apriltag git+https://github.com/openai/CLIP.git "transformers==4.57.1" accelerate hydra-core
+RUN pip install open3d openai ikpy graphviz ultralytics apriltag git+https://github.com/openai/CLIP.git "transformers==4.57.1" accelerate hydra-core "scipy>=1.11,<1.14"
 
 # Install rmw_cyclonedds_cpp for better performance
 RUN apt-get update && apt-get install -y ros-humble-rmw-cyclonedds-cpp
 
 # Install google genai and iopath
-RUN pip install google-genai iopath
+RUN python3 -m pip install --upgrade "packaging>=24.2" "setuptools>=70" wheel && \
+    python3 -m pip install google-genai iopath
 
 # Installing a PyTorch build compatible with CUDA 12.4
-RUN pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+RUN pip install \
+    torch==2.5.1+cu124 \
+    torchvision==0.20.1+cu124 \
+    torchaudio==2.5.1+cu124 \
+    --index-url https://download.pytorch.org/whl/cu124
 
 
 

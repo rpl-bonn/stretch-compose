@@ -9,7 +9,7 @@ import open3d as o3d
 
 import tf2_ros
 from utils.robot_utils.global_parameters import *
-from utils.robot_utils.basic_perception import check_object_distance, correct_offsets_base_frame, extension_to_handle, visualize_correction
+from utils.robot_utils.basic_perception import check_object_distance, correct_offsets_base_frame, correct_vertical_offset, extension_to_handle, visualize_correction
 
 from utils.robot_utils.basic_movement import *
 from scipy.spatial.transform import Rotation
@@ -21,7 +21,7 @@ from utils.importer import PointCloud
 from utils.point_clouds import icp
 from utils.recursive_config import Config
 from utils.time import convert_time
-from scripts.my_robot_scripts.graspnet_testing import visualize_grasps
+# from scripts.robot_demo_scripts.graspnet_testing import visualize_grasps
 from stretch_package.stretch_movement.mode_controller import ModeController
 from stretch_package.stretch_movement.move_body import BaseController
 from stretch_package.stretch_movement.move_to_pose import JointPoseController
@@ -76,7 +76,7 @@ def move_arm_distanced(node: JointPositionController, pose: Pose3D, distance: fl
 SAM3_QUIET_WHILE_SERVOING = True
 
 
-def sam3_box_detector(object_name: str, image: np.ndarray):
+def sam3_box_detector(object_name: str | list[str], image: np.ndarray):
     
     from utils.zero_shot_object_detection_sam3 import sam3_detect_object
 
@@ -223,9 +223,13 @@ def pull_drawer(pose_node: JointPoseController):
 def pull_and_check_drawer(pose_node: JointPoseController, transform_node: FrameTransformer, measure_handle, IMG_DIR,
                           lateral_tol: float = 0.015, max_corrections: int = 1,
                           approach_standoff: float = 0.10, grasp_standoff: float = 0.0,
-                          pull_back_extension: float = 0.05) -> bool:
+                          pull_back_extension: float = 0.05, correct_lift: bool = False,
+                          grasp_roll: float | None = None) -> bool:
     """
-    Pull a drawer open with a mid-approach centering check.
+    Pull a drawer open with a mid-approach centering check. With correct_lift, the lift is also
+    re-aimed at the handle there, from the closest view before the grasp. With grasp_roll, the
+    wrist is rolled to it after the last look at the handle, just before the reach to grasp it,
+    so every measurement is taken with the gripper camera upright.
     """
 
     set_gripper(pose_node, 0.4)
@@ -239,6 +243,8 @@ def pull_and_check_drawer(pose_node: JointPoseController, transform_node: FrameT
     if approach_extension is None:
         print("[pull] could not measure the reach to the handle, not extending the arm")
         return False
+
+    set_gripper(pose_node, 0.3)
 
     pose_node.send_joint_pose({'wrist_extension': (approach_extension, 85.0)})
     spin_until_complete(pose_node)
@@ -254,6 +260,9 @@ def pull_and_check_drawer(pose_node: JointPoseController, transform_node: FrameT
         if err is None:
             print(f"[pull] measurement had no valid depth (attempt {attempt+1}), keeping current alignment")
             break
+        if correct_lift:
+            # The base move is horizontal, so the measured height error still holds
+            correct_vertical_offset(transform_node, pose_node, handle_pose)
         if abs(err[0]) <= lateral_tol:
             print(f"[pull] centered within {lateral_tol*100:.1f} cm, continuing pull")
             break
@@ -274,10 +283,11 @@ def pull_and_check_drawer(pose_node: JointPoseController, transform_node: FrameT
         print("[pull] lost the handle at the approach pose, not reaching further")
         return False
 
-
-    set_gripper(pose_node, 0.35)
-    time.sleep(1.0)
-
+    if grasp_roll is not None:
+        # Rolling about its own axis leaves the grasp centre where it is
+        pose_node.send_joint_pose({'joint_wrist_roll': grasp_roll})
+        spin_until_complete(pose_node)
+    set_gripper(pose_node, 0.3)
     pose_node.send_joint_pose({'wrist_extension': (grasp_extension+0.02, 85.0)})
     spin_until_complete(pose_node)
     time.sleep(2.0)
@@ -381,8 +391,17 @@ def open_door(pose_node: JointPoseController):
     pose_node.send_joint_pose(open_pose_end)
     spin_until_complete(pose_node)
 
+    open_pose_end = {'joint_wrist_yaw': 1.13}
+    pose_node.send_joint_pose(open_pose_end)
+    spin_until_complete(pose_node)
+
     open_pose_end = {'joint_wrist_pitch': -1.4}
     pose_node.send_joint_pose(open_pose_end)
+    spin_until_complete(pose_node)
+
+    #drive 1m forward
+    drive_pose = {'translate_mobile_base': 0.5}
+    pose_node.send_joint_pose(drive_pose)
     spin_until_complete(pose_node)
     
     
@@ -627,7 +646,7 @@ def look_into_drawer(pose_node: JointPoseController, handle_pose: Pose3D):
     spin_until_complete(pose_node)
     time.sleep(1.0)
 
-    gripper_pose =  {'gripper_aperture': 1.0, 'wrist_extension': 0.5 , 'joint_wrist_pitch': -np.pi/2.5, 'joint_wrist_roll': 0.0}
+    gripper_pose =  {'gripper_aperture': 1.0, 'wrist_extension': 0.4 , 'joint_wrist_pitch': -np.pi/2.5, 'joint_wrist_roll': 0.0}
     pose_node.send_joint_pose(gripper_pose)
     spin_until_complete(pose_node)
     time.sleep(1.0)
