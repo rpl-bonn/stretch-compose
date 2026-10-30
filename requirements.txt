@@ -13,8 +13,8 @@ ipython==8.29.0
 matplotlib==3.5.1
 nav2_msgs==1.1.17
 nav_msgs==4.2.4
-numpy==1.24.4
-open3d==0.16.0
+numpy>=1.26,<2
+open3d
 openai==1.86.0
 opencv_contrib_python==4.9.0.80
 opencv_python==4.10.0.84
@@ -29,7 +29,7 @@ Requests==2.32.4
 rosidl_parser==3.1.5
 SAM_2.egg==info
 scikit_learn==1.7.0
-scipy==1.8.0
+scipy>=1.11,<1.14
 sensor_msgs==4.2.4
 sensor_msgs_py==4.2.4
 setuptools==59.6.0

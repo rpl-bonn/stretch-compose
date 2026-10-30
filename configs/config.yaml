@@ -14,6 +14,8 @@ robot_parameters:
 #   "nav2"   -> rtabmap + Nav2
 navigation:
   backend: "nav2"
+  # odometry topic read by get_odom(): "/icp_odom" (rtabmap ICP) or "/odom" (wheel)
+  odom_topic: "/icp_odom"
 
 # device on which to train
 device: "cuda"

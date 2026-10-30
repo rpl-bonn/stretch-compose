@@ -3,7 +3,7 @@ import cv2
 import torch
 from PIL import Image
 import matplotlib
-matplotlib.use("Agg")  
+matplotlib.use("Agg")  # headless: save figures to file, no display needed
 import matplotlib.pyplot as plt
 
 import sam3
@@ -28,10 +28,11 @@ class BBox:
 
 
 class Detection:
-    def __init__(self, name, conf, bbox: BBox):
+    def __init__(self, name, conf, bbox: BBox, mask=None):
         self.name = name
         self.conf = float(conf)
         self.bbox = bbox
+        self.mask = mask
 
     def __repr__(self):
         return (
@@ -106,7 +107,8 @@ class Sam3Inference:
                 all_detections += self._convert_to_detection_format(
                     text_prompt,
                     result["boxes"],
-                    result["scores"]
+                    result["scores"],
+                    result["masks"]
                 )
 
                 if visualize:
@@ -115,12 +117,13 @@ class Sam3Inference:
         return all_detections
 
 
-    def _convert_to_detection_format(self, name, boxes, scores):
+    def _convert_to_detection_format(self, name, boxes, scores, masks):
         detections = []
 
         for i in range(len(boxes)):
             bbox = boxes[i]
             conf = scores[i]
+            mask = masks[i].squeeze().to(torch.uint8).cpu().numpy() * 255
 
             detection = Detection(
                 name=name,
@@ -130,7 +133,8 @@ class Sam3Inference:
                     bbox[1].item(),
                     bbox[2].item(),
                     bbox[3].item()
-                )
+                ),
+                mask=mask
             )
 
             detections.append(detection)

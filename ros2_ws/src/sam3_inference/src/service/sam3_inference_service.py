@@ -55,6 +55,7 @@ class Sam3Server(Node):
             bbox.ymax = float(det.bbox.ymax)
 
             msg.bbox = bbox
+            msg.mask = self.bridge.cv2_to_imgmsg(det.mask, encoding="mono8")
             response.detections.append(msg)
 
         return response
