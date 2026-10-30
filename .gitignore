@@ -208,3 +208,9 @@ source/hierarchical_localization/
 
 #data logs
 data_logging_stretch/
+
+# third-party clones and Dynamem outputs
+stretch_ai/
+stretch_visual_servoing/
+piper_tts/
+dynamem_log/
