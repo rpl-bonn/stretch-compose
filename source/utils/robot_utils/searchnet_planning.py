@@ -500,7 +500,7 @@ def filter_drawers(in_scene_graph: bool, graph_data: dict, connections: dict, ch
     
     return fitting_drawers
 
-def plan_door_search(furniture_name: str, center: np.ndarray, drawer_center: Pose3D, dist: float) -> tuple[Pose3D, np.ndarray]:
+def plan_door_search(furniture_name: str, center: np.ndarray, drawer_center: Pose3D, dist: float, tolerance: float=0.5) -> tuple[Pose3D, np.ndarray]:
     """
     Plan to reach the door handle of the furniture.
     """
@@ -512,7 +512,7 @@ def plan_door_search(furniture_name: str, center: np.ndarray, drawer_center: Pos
         furniture_pcd, env_pcd, _ = get_mask_points(furnitures, Config(), idx=idx, vis_block=VIS_BLOCK)
         furniture_center = np.mean(np.asarray(furniture_pcd.points), axis=0)
         # Find correct furniture
-        if (np.allclose(furniture_center, center, atol=0.5)):
+        if (np.allclose(furniture_center, center, atol=tolerance)):
             print("Shelf/Cabinet found!")
             # Get normal of furniture front face
             front_normal = get_shelf_front_normal(furniture_pcd, furniture_name)

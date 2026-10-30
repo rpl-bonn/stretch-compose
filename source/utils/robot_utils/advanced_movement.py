@@ -9,7 +9,7 @@ import open3d as o3d
 
 import tf2_ros
 from utils.robot_utils.global_parameters import *
-from utils.robot_utils.basic_perception import check_object_distance, correct_offsets_base_frame, extension_to_handle, visualize_correction
+from utils.robot_utils.basic_perception import check_object_distance, correct_offsets_base_frame, correct_vertical_offset, extension_to_handle, visualize_correction
 
 from utils.robot_utils.basic_movement import *
 from scipy.spatial.transform import Rotation
@@ -21,7 +21,7 @@ from utils.importer import PointCloud
 from utils.point_clouds import icp
 from utils.recursive_config import Config
 from utils.time import convert_time
-from scripts.my_robot_scripts.graspnet_testing import visualize_grasps
+# from scripts.robot_demo_scripts.graspnet_testing import visualize_grasps
 from stretch_package.stretch_movement.mode_controller import ModeController
 from stretch_package.stretch_movement.move_body import BaseController
 from stretch_package.stretch_movement.move_to_pose import JointPoseController

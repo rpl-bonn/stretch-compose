@@ -10,7 +10,7 @@ from threading import Thread
 import traceback
 
 from scripts.llm_scripts.deepseek_client import ask_deepseek_for_locations
-from scripts.my_robot_scripts import searchnet_planning
+from utils.robot_utils import searchnet_planning
 from scripts.preprocessing_scripts.scenegraph_preprocessing import add_object_to_scene_graph, update_object_in_scene_graph
 from stretch_package.stretch_images.aligned_depth2color_subscriber import AlignedDepth2ColorSubscriber
 from stretch_package.stretch_images.rgb_image_subscriber import RGBImageSubscriber
